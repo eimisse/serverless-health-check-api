@@ -15,11 +15,13 @@ data "aws_iam_policy_document" "deployment_verification" {
     resources = [local.resource_arns[each.key].table]
   }
 
+  # FilterLogEvents authorizes against the exact CloudWatch Logs log-group ARN,
+  # not the log-stream ARN form ending in :*.
   statement {
     sid       = "VerifyLambdaApplicationLogs"
     effect    = "Allow"
     actions   = ["logs:FilterLogEvents"]
-    resources = ["${local.resource_arns[each.key].lambda_log_group}:*"]
+    resources = [local.resource_arns[each.key].lambda_log_group]
   }
 
   # These read-only EC2 APIs are required to prove that the deployed Lambda VPC

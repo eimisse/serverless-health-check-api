@@ -77,7 +77,24 @@ run "deployment_key_admin_excludes_grant_administration" {
         if statement.Sid == "DeploymentRoleDynamoDBGrant"
       ]) == "dynamodb.eu-west-1.amazonaws.com"
     )
-    error_message = "DynamoDB CreateGrant must remain isolated to the AWS-resource service path."
+    error_message = "DynamoDB CreateGrant must remain isolated to the deployment role and AWS-resource service path."
+  }
+
+  assert {
+    condition = (
+      length([
+        for statement in jsondecode(aws_kms_key.dynamodb.policy).Statement : statement
+        if statement.Sid == "RuntimeRoleDynamoDBGrant"
+      ]) == 0 &&
+      !contains(
+        one([
+          for statement in jsondecode(aws_kms_key.dynamodb.policy).Statement : statement.Action
+          if statement.Sid == "RuntimeRoleDynamoDBCryptoUse"
+        ]),
+        "kms:CreateGrant",
+      )
+    )
+    error_message = "The Lambda runtime role must never receive kms:CreateGrant; table/grant lifecycle belongs to the deployment role."
   }
 
   assert {

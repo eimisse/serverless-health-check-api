@@ -109,8 +109,12 @@ def verify_release_alias(config: Config) -> str:
     )
 
     check(alias.get("Name") == alias_name, "Lambda release alias has the exact environment name")
+    alias_arn = alias.get("AliasArn")
     check(
-        alias.get("FunctionArn", "").endswith(f":{alias_name}"),
+        isinstance(alias_arn, str)
+        and alias_arn.endswith(
+            f":function:{config.lambda_function_name}:{alias_name}"
+        ),
         "Lambda release alias ARN is qualified by the environment alias",
     )
 

@@ -58,7 +58,7 @@ class ReleaseAliasVerificationTests(unittest.TestCase):
         responses = [
             {
                 "Name": "staging-release",
-                "FunctionArn": "arn:aws:lambda:eu-west-1:123456789012:function:staging-health-check-function:staging-release",
+                "AliasArn": "arn:aws:lambda:eu-west-1:123456789012:function:staging-health-check-function:staging-release",
                 "FunctionVersion": "42",
             },
             {
@@ -114,7 +114,7 @@ class ReleaseAliasVerificationTests(unittest.TestCase):
             aws_json.call_args_list[2],
         )
 
-    def test_rejects_latest_instead_of_published_version(self) -> None:
+    def test_rejects_missing_alias_arn_even_if_function_arn_is_present(self) -> None:
         cfg = config()
         with mock.patch.object(
             verify_release_alias,
@@ -122,6 +122,23 @@ class ReleaseAliasVerificationTests(unittest.TestCase):
             return_value={
                 "Name": "staging-release",
                 "FunctionArn": "arn:aws:lambda:eu-west-1:123456789012:function:staging-health-check-function:staging-release",
+                "FunctionVersion": "42",
+            },
+        ):
+            with self.assertRaisesRegex(
+                verify_deployment.VerificationError,
+                "release alias ARN is qualified",
+            ):
+                verify_release_alias.verify_release_alias(cfg)
+
+    def test_rejects_latest_instead_of_published_version(self) -> None:
+        cfg = config()
+        with mock.patch.object(
+            verify_release_alias,
+            "aws_json",
+            return_value={
+                "Name": "staging-release",
+                "AliasArn": "arn:aws:lambda:eu-west-1:123456789012:function:staging-health-check-function:staging-release",
                 "FunctionVersion": "$LATEST",
             },
         ):
@@ -139,7 +156,7 @@ class ReleaseAliasVerificationTests(unittest.TestCase):
             side_effect=[
                 {
                     "Name": "staging-release",
-                    "FunctionArn": "arn:aws:lambda:eu-west-1:123456789012:function:staging-health-check-function:staging-release",
+                    "AliasArn": "arn:aws:lambda:eu-west-1:123456789012:function:staging-health-check-function:staging-release",
                     "FunctionVersion": "42",
                 },
                 {
@@ -164,7 +181,7 @@ class ReleaseAliasVerificationTests(unittest.TestCase):
             side_effect=[
                 {
                     "Name": "staging-release",
-                    "FunctionArn": "arn:aws:lambda:eu-west-1:123456789012:function:staging-health-check-function:staging-release",
+                    "AliasArn": "arn:aws:lambda:eu-west-1:123456789012:function:staging-health-check-function:staging-release",
                     "FunctionVersion": "42",
                 },
                 {
@@ -197,7 +214,7 @@ class ReleaseAliasVerificationTests(unittest.TestCase):
             side_effect=[
                 {
                     "Name": "staging-release",
-                    "FunctionArn": "arn:aws:lambda:eu-west-1:123456789012:function:staging-health-check-function:staging-release",
+                    "AliasArn": "arn:aws:lambda:eu-west-1:123456789012:function:staging-health-check-function:staging-release",
                     "FunctionVersion": "42",
                 },
                 {
@@ -228,7 +245,7 @@ class ReleaseAliasVerificationTests(unittest.TestCase):
             side_effect=[
                 {
                     "Name": "staging-release",
-                    "FunctionArn": "arn:aws:lambda:eu-west-1:123456789012:function:staging-health-check-function:staging-release",
+                    "AliasArn": "arn:aws:lambda:eu-west-1:123456789012:function:staging-health-check-function:staging-release",
                     "FunctionVersion": "42",
                 },
                 {

@@ -11,7 +11,7 @@ GitHub Actions deploys through short-lived AWS STS credentials obtained with Git
 
 For a requirement-by-requirement implementation map, see [`docs/REQUIREMENTS.md`](docs/REQUIREMENTS.md). Security assumptions and trust boundaries are documented in [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md) and [`SECURITY.md`](SECURITY.md). Operational response and rollback procedures are in [`RUNBOOK.md`](RUNBOOK.md).
 
-> **Evidence model:** repository source/configuration controls are considered implemented when present and covered by tests. Claims about live AWS state are considered proven only after the corresponding deployment verification succeeds.
+> **Evidence model:** repository source/configuration controls are considered implemented when present and covered by tests. Claims about live AWS state are considered proven only after the corresponding deployment verification succeeds. The latest completed `main` staging release has passed the full live gate; every later `main` revision must repeat it before being treated as releasable.
 
 ## Architecture
 
@@ -172,7 +172,8 @@ terraform/tests/                  native Terraform security/invariant tests
 scripts/package_lambda.py         deterministic Lambda package builder
 scripts/check_iam_wildcards.py    machine-audited IAM wildcard policy guard
 scripts/check_terraform_plan.py   destructive/security/resilience/release saved-plan guard
-scripts/verify_deployment.py      live staging functionality/security verifier
+scripts/verify_deployment.py      shared live verification primitives
+scripts/verify_staging_release.py deterministic full staging release gate
 scripts/verify_prod_deployment.py non-load production verifier
 scripts/verify_gateway_boundary.py API Gateway early-validation proof
 scripts/verify_release_alias.py   immutable Lambda release and live-policy proof
@@ -323,24 +324,36 @@ The staging flow is split across a security boundary:
 3. only the deployment job receives `id-token: write` and staging Environment variables;
 4. GitHub OIDC is exchanged for short-lived credentials for the staging deployment role;
 5. the job verifies the assumed AWS account;
-6. Terraform initializes KMS-encrypted remote state with native S3 locking;
-7. Terraform creates a saved plan using `environments/staging.tfvars` and the current `GITHUB_SHA`;
-8. `scripts/check_terraform_plan.py` audits destructive changes and critical security/resilience/release invariants;
-9. the workflow applies **exactly that saved plan**;
-10. the AWS-generated API key is retrieved only for verification and immediately masked;
-11. live verification proves API behavior, DynamoDB persistence/encryption, KMS rotation, VPC isolation, API-key rejection, and log redaction;
-12. boundary verification proves invalid Content-Type and whitespace-only requests are rejected before Lambda;
+6. a read-only live preflight exercises the deployment-role/provider refresh paths before Terraform plan/apply;
+7. Terraform initializes KMS-encrypted remote state with native S3 locking;
+8. Terraform creates a saved plan using `environments/staging.tfvars` and the current `GITHUB_SHA`;
+9. `scripts/check_terraform_plan.py` audits destructive changes and critical security/resilience/release invariants;
+10. the workflow applies **exactly that saved plan**;
+11. the AWS-generated API key is retrieved only for verification and immediately masked;
+12. `scripts/verify_staging_release.py` proves GET/POST behavior, DynamoDB persistence/encryption, KMS rotation, VPC isolation, exact DynamoDB-only SG egress, API-key rejection, log redaction, and the live API Gateway stage/usage-plan throttling configuration;
 13. release verification proves `${environment}-release` points to a published numeric Lambda version for the expected Git commit and audits its live invoke policy;
-14. a small staging-only **GET** burst proves HTTP `429` throttling without creating DynamoDB records;
+14. boundary verification proves invalid Content-Type and whitespace-only requests are rejected before Lambda;
 15. a second Terraform plan must report zero drift.
+
+The throttling release gate intentionally reads the effective AWS control-plane values rather than requiring a synthetic burst to produce a `429`: API Gateway throttling is a best-effort target, so a one-shot timing-sensitive 429 assertion is not a deterministic deployment criterion.
 
 ### Production deployment
 
-`.github/workflows/deploy-prod.yml` is `workflow_dispatch` only and requires `main`.
+`.github/workflows/deploy-prod.yml` is `workflow_dispatch` only and requires `main`. Production is not deployed merely to demonstrate this homework.
 
-It uses the same credential-free reusable quality gate, then a separate `prod` Environment deployment job with its own OIDC role and state key. Configure the `prod` GitHub Environment with required reviewers so explicit approval occurs before the environment variables and OIDC token become available to the deployment job.
+The production flow is deliberately stricter than a simple manual Terraform apply:
 
-Production performs the same core functional/security/release verification but deliberately omits the staging load/throttling burst.
+1. the credential-free reusable quality/security gate must pass;
+2. a separate credential-free job queries GitHub Actions and requires a successful **push-triggered staging deployment for the exact same `GITHUB_SHA`**;
+3. only then can the `prod` GitHub Environment deployment job become eligible to start;
+4. configure the `prod` GitHub Environment with **required reviewers** so approval happens before protected environment variables and the OIDC token become available;
+5. OIDC assumes the dedicated production deployment role and a live read preflight runs before planning;
+6. the workflow captures the current `prod-release` numeric Lambda version and its immutable `APP_VERSION` as an emergency rollback target;
+7. Terraform creates, guards, and applies an exact saved production plan;
+8. non-load production functionality, release-alias, gateway-boundary and zero-drift verification run;
+9. if apply starts and the deployment subsequently fails, the workflow restores the previous `prod-release` alias when one exists and verifies both the restored numeric version and its `APP_VERSION`.
+
+The automatic alias restoration is a fail-safe, not a claim of zero-impact/two-phase deployment. A failed Terraform apply may already have changed other resources. Emergency alias rollback therefore intentionally leaves desired-state drift that must be reconciled through the normal reviewed Git/Terraform flow before a later promotion.
 
 ## Lambda packaging and immutable versioning
 
@@ -364,17 +377,19 @@ Terraform outputs include the function and release metadata needed for operation
 
 ### Rollback
 
-Rollback is GitOps-controlled rather than a console mutation:
+The normal supported rollback is GitOps-controlled:
 
 1. identify/revert to the last known-good source/configuration through normal review;
-2. CI rebuilds the deterministic package;
+2. CI rebuilds the deterministic package and reruns all security/quality gates;
 3. review the new saved Terraform plan;
 4. apply that exact plan;
 5. Terraform publishes the release state and moves the environment alias;
-6. live verification confirms the alias and Git release identity;
+6. live verification confirms the user path, alias and Git release identity;
 7. require zero post-deployment drift.
 
-API Gateway does not need to be manually repointed during the supported rollback path.
+API Gateway does not need to be manually repointed during the normal rollback path.
+
+Production additionally has the workflow-level emergency `prod-release` alias fail-safe described above. It minimizes exposure to a bad Lambda release when a deployment fails after apply starts, but it does not roll back arbitrary Terraform changes. After that fail-safe runs, the deployment is still failed: inspect the partial change set, revert/fix source, review a fresh plan, and reconcile to zero drift before the next promotion.
 
 ## Retrieve the generated API key
 
@@ -455,6 +470,8 @@ The function receives only:
 
 The EC2 VPC control-plane actions require `Resource = "*"` because the network interfaces do not yet exist when Lambda creates them. Those actions are explicitly enumerated and machine-reviewed. The function code is explicitly denied from reusing those EC2 actions through `lambda:SourceFunctionArn`.
 
+The DynamoDB CMK policy separately permits the exact runtime role only the KMS operations needed through the DynamoDB service path and exact table/account encryption context. `kms:CreateGrant` is not granted to the Lambda runtime role; grant/table lifecycle remains with the deployment role under a service-constrained statement.
+
 ### Deployment roles
 
 Staging and prod use separate GitHub OIDC deployment roles. Permissions are split into focused policies and constrained to environment resource names/ARNs where AWS supports resource-level authorization.
@@ -477,13 +494,14 @@ The saved-plan guard rejects regressions in the critical persistence controls be
 
 ## Throttling and abuse controls
 
-The API uses three bounded-capacity controls:
+The API always uses two explicit API Gateway controls:
 
-1. API Gateway method/stage rate and burst limits;
-2. API-key usage-plan rate and burst limits;
-3. Lambda reserved concurrency.
+1. method/stage rate and burst limits;
+2. API-key usage-plan rate and burst limits.
 
-A controlled staging GET burst must demonstrate HTTP `429`. The test does not create synthetic DynamoDB records.
+Production also has explicit Lambda reserved concurrency. Staging intentionally uses the account-shared Lambda concurrency pool because a very small reservation would violate the account's minimum unreserved-concurrency requirement; the required API Gateway throttling controls remain active.
+
+The staging release verifier deterministically reads the live API Gateway stage/usage plan and requires the exact configured GET/POST rate/burst values, detailed method metrics, exact API/stage association and generated API-key association. It deliberately does not require one synthetic burst to produce `429`, because API Gateway throttling is a best-effort target and that observation is timing-sensitive.
 
 These are rate/capacity controls rather than a claim of complete Internet DDoS protection. For a higher-risk real service, AWS WAF/Shield and stronger caller identity would be evaluated separately.
 
@@ -510,7 +528,7 @@ Before apply, `scripts/check_terraform_plan.py` rejects, among other things:
 - disabled PITR/TTL;
 - production deletion-protection regression;
 - incorrect PAY_PER_REQUEST/key invariants;
-- missing Lambda VPC/concurrency/version publishing;
+- missing Lambda VPC/concurrency/version publishing invariants;
 - release alias regression to `$LATEST`;
 - API Gateway integration not bound to the environment release alias;
 - loss of API-key enforcement;
@@ -543,16 +561,19 @@ CI adds TFLint, Bandit, pip-audit, Checkov, Trivy, actionlint, zizmor, and the s
 
 ## Failure recovery
 
-If a failed first deployment creates an AWS object but Terraform fails before state ownership is safely recorded:
+If a failed deployment creates or changes an AWS object before Terraform safely completes:
 
-1. stop automatic retries;
+1. stop blind automatic/manual retries;
 2. identify the exact AWS resource and Terraform address;
-3. inspect the correct environment remote state;
-4. reconcile/import only the intended resource if appropriate;
-5. generate a fresh saved plan;
-6. review it before apply.
+3. inspect the correct environment remote state and live resource;
+4. determine exactly what the failed apply changed;
+5. reconcile/import only the intended resource if appropriate;
+6. generate a fresh saved plan;
+7. review it before any apply.
 
 Do not use broad deletion or weaken security gates to make the next deployment pass.
+
+For production, the workflow's emergency alias rollback can restore the previous immutable Lambda release after apply starts and a failure occurs, but it does not replace the Terraform reconciliation steps above for other partially applied resources.
 
 The source of truth is reviewed Terraform configuration plus environment-specific remote state, not ad-hoc console changes.
 
@@ -568,19 +589,22 @@ The design avoids NAT Gateway, WAF, provisioned DynamoDB capacity, and unnecessa
 
 ## Live verification status
 
-The repository deliberately distinguishes source correctness from deployed evidence. Static/unit/Terraform/security checks can prove the repository contract without AWS credentials, but live AWS claims require the staging deployment verification workflow.
+The repository deliberately distinguishes source correctness from deployed evidence. Static/unit/Terraform/security checks prove the repository contract without AWS credentials; live AWS claims require the staging deployment verification workflow.
 
-Before final submission, the intended live evidence is:
+A complete staging deployment on `main` has passed the full release gate. Proven staging evidence includes:
 
-- GitHub OIDC assumes only the staging deployment role;
-- `staging-release` targets a published numeric Lambda version for the expected Git SHA;
-- GET `/health` returns the expected release identity;
-- POST `/health` persists and correlates the request in DynamoDB;
-- invalid/missing/whitespace requests return `400`, with early-rejection probes proving they do not reach Lambda;
-- missing/wrong API key returns `403`;
-- DynamoDB SSE uses the expected CMK, PITR/TTL are enabled, and KMS rotation is enabled;
-- Lambda is isolated in the intended private VPC with no NAT/IGW;
-- staging throttling produces controlled `429` responses;
-- post-deployment Terraform reports zero drift.
+- GitHub OIDC assuming only the staging deployment role and matching the expected AWS account;
+- live deployment-role preflight before Terraform plan/apply;
+- the guarded saved plan applying successfully;
+- `staging-release` targeting a published numeric Lambda version for the expected Git SHA;
+- GET `/health` returning the expected release identity;
+- POST `/health` returning the required success body and persisting/correlating the request in DynamoDB;
+- invalid/missing/whitespace payloads returning `400`, with boundary probes proving selected invalid requests do not reach Lambda;
+- missing/wrong API key returning `403`;
+- DynamoDB SSE using the expected CMK, PITR/TTL enabled, and KMS rotation enabled;
+- Lambda isolated in exactly two private subnets with no NAT/IGW;
+- Lambda SG exposing exactly one outbound rule: TCP/443 only to the regional DynamoDB managed prefix list, with no CIDR/IPv6/security-group destination;
+- exact live GET/POST stage throttling, detailed metrics, usage-plan throttling, API/stage association and API-key association;
+- post-deployment Terraform reporting zero drift.
 
-Production remains manual-only and should not be deployed merely to demonstrate this homework unless explicitly required.
+Any later change to `main` must pass the same staging workflow before it becomes eligible for production promotion. Production remains manual-only and should not be deployed merely to demonstrate this homework unless explicitly required.

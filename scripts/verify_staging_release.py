@@ -5,8 +5,12 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 
-from scripts import verify_deployment as base
+if __package__:
+    from . import verify_deployment as base
+else:
+    import verify_deployment as base
 
 
 def _required(name: str) -> str:
@@ -17,8 +21,9 @@ def _required(name: str) -> str:
 
 
 def _expected_float(name: str) -> float:
+    raw = _required(name)
     try:
-        return float(_required(name))
+        return float(raw)
     except ValueError as exc:
         raise ValueError(f"{name} must be numeric") from exc
 
@@ -32,6 +37,130 @@ def _expected_int(name: str) -> int:
     if value < 1:
         raise ValueError(f"{name} must be positive")
     return value
+
+
+def _canonical_method_setting_key(key: str) -> str:
+    """Normalize API Gateway/Terraform method-setting path encodings."""
+
+    return key.replace("~1", "/").lstrip("/")
+
+
+def _method_setting(method_settings: dict[str, object], expected_key: str) -> dict[str, object]:
+    matches = [
+        value
+        for key, value in method_settings.items()
+        if isinstance(key, str)
+        and _canonical_method_setting_key(key) == expected_key
+        and isinstance(value, dict)
+    ]
+    if len(matches) != 1:
+        raise base.VerificationError(
+            f"live API Gateway stage must expose exactly one method setting for {expected_key}"
+        )
+    return matches[0]
+
+
+def verify_live_dynamodb_egress(config: base.Config) -> None:
+    """Prove the Lambda SG has exactly one egress path: DynamoDB HTTPS."""
+
+    lambda_config = base.aws_json(
+        config,
+        "lambda",
+        "get-function-configuration",
+        "--function-name",
+        config.lambda_function_name,
+    )
+    vpc_config = lambda_config.get("VpcConfig", {})
+    security_group_ids = vpc_config.get("SecurityGroupIds", [])
+    base.check(
+        isinstance(security_group_ids, list) and len(security_group_ids) == 1,
+        "Lambda uses exactly one runtime security group",
+    )
+    security_group_id = security_group_ids[0]
+
+    service_name = f"com.amazonaws.{config.region}.dynamodb"
+    endpoint_response = base.aws_json(
+        config,
+        "ec2",
+        "describe-vpc-endpoints",
+        "--vpc-endpoint-ids",
+        config.dynamodb_vpc_endpoint_id,
+    )
+    endpoints = endpoint_response.get("VpcEndpoints", [])
+    base.check(
+        isinstance(endpoints, list) and len(endpoints) == 1,
+        "DynamoDB endpoint is available for egress verification",
+    )
+    base.check(
+        endpoints[0].get("ServiceName") == service_name,
+        "egress verification uses the regional DynamoDB endpoint",
+    )
+
+    # DescribeVpcEndpoints does not expose the AWS-managed prefix-list ID for a
+    # Gateway endpoint. Discover the regional service prefix list explicitly;
+    # this is the same EC2 read path Terraform uses for data.aws_prefix_list.
+    prefix_list_response = base.aws_json(
+        config,
+        "ec2",
+        "describe-prefix-lists",
+        "--filters",
+        f"Name=prefix-list-name,Values={service_name}",
+    )
+    prefix_lists = prefix_list_response.get("PrefixLists", [])
+    base.check(
+        isinstance(prefix_lists, list) and len(prefix_lists) == 1,
+        "AWS exposes exactly one regional DynamoDB managed prefix list",
+    )
+    prefix_list_id = prefix_lists[0].get("PrefixListId")
+    base.check(
+        isinstance(prefix_list_id, str) and prefix_list_id.startswith("pl-"),
+        "regional DynamoDB managed prefix list has a valid ID",
+    )
+    base.check(
+        prefix_lists[0].get("PrefixListName") == service_name,
+        "regional DynamoDB managed prefix list has the expected service name",
+    )
+
+    security_groups = base.aws_json(
+        config,
+        "ec2",
+        "describe-security-groups",
+        "--group-ids",
+        security_group_id,
+    ).get("SecurityGroups", [])
+    base.check(
+        isinstance(security_groups, list) and len(security_groups) == 1,
+        "Lambda runtime security group is readable",
+    )
+
+    egress = security_groups[0].get("IpPermissionsEgress", [])
+    base.check(
+        isinstance(egress, list) and len(egress) == 1,
+        "Lambda security group has exactly one outbound rule",
+    )
+    rule = egress[0]
+    prefix_lists = rule.get("PrefixListIds", [])
+    actual_prefixes = {
+        item.get("PrefixListId")
+        for item in prefix_lists
+        if isinstance(item, dict) and item.get("PrefixListId")
+    }
+    base.check(
+        rule.get("IpProtocol") == "tcp"
+        and rule.get("FromPort") == 443
+        and rule.get("ToPort") == 443,
+        "Lambda outbound rule permits only TCP/443",
+    )
+    base.check(
+        actual_prefixes == {prefix_list_id},
+        "Lambda outbound rule targets only the DynamoDB managed prefix list",
+    )
+    base.check(
+        not rule.get("IpRanges")
+        and not rule.get("Ipv6Ranges")
+        and not rule.get("UserIdGroupPairs"),
+        "Lambda outbound rule exposes no CIDR, IPv6, or security-group destination",
+    )
 
 
 def verify_live_throttling_configuration(config: base.Config) -> None:
@@ -62,18 +191,17 @@ def verify_live_throttling_configuration(config: base.Config) -> None:
         "--stage-name",
         stage_name,
     )
-    base.check(stage.get("stageName") == stage_name, "live API Gateway stage name matches Terraform")
+    base.check(
+        stage.get("stageName") == stage_name,
+        "live API Gateway stage name matches Terraform",
+    )
 
     method_settings = stage.get("methodSettings", {})
     if not isinstance(method_settings, dict):
         raise base.VerificationError("API Gateway stage returned invalid method settings")
 
-    for method_key in ("~1health/GET", "~1health/POST"):
-        settings = method_settings.get(method_key)
-        if not isinstance(settings, dict):
-            raise base.VerificationError(
-                f"live API Gateway stage is missing method settings for {method_key}"
-            )
+    for method_key in ("health/GET", "health/POST"):
+        settings = _method_setting(method_settings, method_key)
         base.check(
             float(settings.get("throttlingRateLimit", -1)) == expected_stage_rate,
             f"{method_key} live stage rate limit matches Terraform",
@@ -96,7 +224,9 @@ def verify_live_throttling_configuration(config: base.Config) -> None:
     )
     throttle = usage_plan.get("throttle", {})
     if not isinstance(throttle, dict):
-        raise base.VerificationError("API Gateway usage plan returned invalid throttle settings")
+        raise base.VerificationError(
+            "API Gateway usage plan returned invalid throttle settings"
+        )
     base.check(
         float(throttle.get("rateLimit", -1)) == expected_usage_rate,
         "live usage-plan rate limit matches Terraform",
@@ -113,7 +243,10 @@ def verify_live_throttling_configuration(config: base.Config) -> None:
         and item.get("stage") == stage_name
         for item in api_stages
     )
-    base.check(associated, "usage plan remains associated with the exact deployed API stage")
+    base.check(
+        associated,
+        "usage plan remains associated with the exact deployed API stage",
+    )
 
     usage_plan_keys = base.aws_json(
         config,
@@ -129,7 +262,10 @@ def verify_live_throttling_configuration(config: base.Config) -> None:
         and item.get("type") == "API_KEY"
         for item in items
     )
-    base.check(attached_key, "generated API key remains attached to the deployed usage plan")
+    base.check(
+        attached_key,
+        "generated API key remains attached to the deployed usage plan",
+    )
 
 
 def main() -> int:
@@ -149,6 +285,7 @@ def main() -> int:
         base.verify_gateway_rejects_before_lambda(config)
         base.verify_encryption(config)
         base.verify_network(config)
+        verify_live_dynamodb_egress(config)
         verify_live_throttling_configuration(config)
     except (
         base.VerificationError,
@@ -156,12 +293,12 @@ def main() -> int:
         subprocess.TimeoutExpired,
         TimeoutError,
     ) as exc:
-        print(f"DEPLOYMENT VERIFICATION FAILED: {exc}", file=__import__("sys").stderr)
+        print(f"DEPLOYMENT VERIFICATION FAILED: {exc}", file=sys.stderr)
         return 1
 
     print(
         "DEPLOYMENT VERIFICATION PASSED: staging functionality, persistence, security, "
-        "and live throttling controls are healthy."
+        "network egress, and live throttling controls are healthy."
     )
     return 0
 

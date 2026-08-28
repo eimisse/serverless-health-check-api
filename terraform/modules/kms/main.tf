@@ -48,7 +48,7 @@ locals {
   ]
 
   # Keep DescribeKey separate for the runtime role: KMS encryption-context
-  # condition keys apply to cryptographic operations (and CreateGrant), not DescribeKey.
+  # condition keys apply to cryptographic operations, not DescribeKey.
   dynamodb_crypto_actions = [
     "kms:Decrypt",
     "kms:Encrypt",
@@ -144,22 +144,6 @@ resource "aws_kms_key" "dynamodb" {
             "kms:ViaService"                                  = "dynamodb.${var.aws_region}.amazonaws.com"
             "kms:EncryptionContext:aws:dynamodb:subscriberId" = var.aws_account_id
             "kms:EncryptionContext:aws:dynamodb:tableName"    = var.table_name
-          }
-        }
-      },
-      {
-        Sid       = "RuntimeRoleDynamoDBGrant"
-        Effect    = "Allow"
-        Principal = { AWS = var.runtime_role_arn }
-        Action    = "kms:CreateGrant"
-        Resource  = "*"
-        Condition = {
-          Bool = {
-            "kms:GrantIsForAWSResource" = "true"
-          }
-          StringEquals = {
-            "kms:CallerAccount" = var.aws_account_id
-            "kms:ViaService"    = "dynamodb.${var.aws_region}.amazonaws.com"
           }
         }
       },

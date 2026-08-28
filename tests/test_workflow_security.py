@@ -32,7 +32,8 @@ class WorkflowSecurityTests(unittest.TestCase):
             with self.subTest(filename=filename):
                 workflow = read(filename)
                 self.assertIn("uses: ./.github/workflows/ci.yml", workflow)
-                self.assertIn("needs: quality-gate", workflow)
+                self.assertIn("needs:", workflow)
+                self.assertIn("quality-gate", workflow)
                 self.assertEqual(1, workflow.count("id-token: write"))
                 self.assertIn(f"environment: {environment}", workflow)
                 self.assertLess(
@@ -75,6 +76,53 @@ class WorkflowSecurityTests(unittest.TestCase):
         self.assertIn("workflow_dispatch:", on_block)
         self.assertNotIn("push:", on_block)
         self.assertNotIn("pull_request:", on_block)
+
+    def test_production_requires_successful_staging_for_exact_sha(self) -> None:
+        workflow = read("deploy-prod.yml")
+        self.assertIn("staging-proof:", workflow)
+        self.assertIn("Require exact SHA staging success", workflow)
+        self.assertIn("actions: read", workflow)
+        self.assertIn("actions/workflows/deploy-staging.yml/runs", workflow)
+        self.assertIn('-f branch=main', workflow)
+        self.assertIn('-f event=push', workflow)
+        self.assertIn('-f status=success', workflow)
+        self.assertIn('-f head_sha="${GITHUB_SHA}"', workflow)
+        self.assertIn('.head_branch == "main"', workflow)
+        self.assertIn('.head_sha == $sha', workflow)
+        self.assertIn('.event == "push"', workflow)
+        self.assertIn('.conclusion == "success"', workflow)
+        self.assertIn("- staging-proof", workflow)
+        self.assertLess(
+            workflow.index("Require exact SHA staging success"),
+            workflow.index("environment: prod"),
+        )
+
+    def test_production_captures_and_rolls_back_release_alias_only_after_apply_ran(self) -> None:
+        workflow = read("deploy-prod.yml")
+        capture = "Capture current production release rollback target"
+        apply = "Apply exact approved prod plan"
+        rollback = "Roll back production release alias after failed or cancelled deployment"
+        guarded_outcomes = (
+            "(steps.apply.outcome == 'success' || "
+            "steps.apply.outcome == 'failure' || "
+            "steps.apply.outcome == 'cancelled')"
+        )
+
+        self.assertIn(capture, workflow)
+        self.assertIn("id: capture-release", workflow)
+        self.assertIn("PREVIOUS_PROD_RELEASE_VERSION", workflow)
+        self.assertIn("PREVIOUS_PROD_APP_VERSION", workflow)
+        self.assertIn("get-function-configuration", workflow)
+        self.assertIn("id: apply", workflow)
+        self.assertIn("failure() || cancelled()", workflow)
+        self.assertIn(guarded_outcomes, workflow)
+        self.assertNotIn("steps.apply.outcome != 'skipped'", workflow)
+        self.assertIn("aws lambda update-alias", workflow)
+        self.assertIn("--name prod-release", workflow)
+        self.assertIn("ROLLBACK COMPLETE", workflow)
+        self.assertIn("intentionally creates Terraform drift", workflow)
+        self.assertLess(workflow.index(capture), workflow.index(apply))
+        self.assertLess(workflow.index(apply), workflow.index(rollback))
 
     def test_workflows_do_not_enable_static_aws_credentials(self) -> None:
         forbidden = (

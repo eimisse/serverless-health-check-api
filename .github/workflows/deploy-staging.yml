@@ -134,7 +134,7 @@ jobs:
         run: terraform -chdir=terraform apply -input=false tfplan
 
       - name: Export non-secret Terraform outputs and mask API key
-        id: export-runtime
+        id: export_runtime
         shell: bash
         run: |
           set -euo pipefail
@@ -188,11 +188,11 @@ jobs:
         run: python scripts/verify_staging_release.py
 
       - name: Verify immutable Lambda release alias
-        if: ${{ always() && steps.apply.outcome == 'success' && steps.export-runtime.outcome == 'success' }}
+        if: ${{ always() && steps.apply.outcome == 'success' && steps.export_runtime.outcome == 'success' }}
         run: python scripts/verify_release_alias.py
 
       - name: Prove invalid requests cannot bypass API Gateway validation
-        if: ${{ always() && steps.apply.outcome == 'success' && steps.export-runtime.outcome == 'success' }}
+        if: ${{ always() && steps.apply.outcome == 'success' && steps.export_runtime.outcome == 'success' }}
         run: python scripts/verify_gateway_boundary.py
 
       - name: Verify zero Terraform drift after deployment

@@ -88,7 +88,7 @@ Implemented alarms:
 | Signal | Alarm | Initial interpretation |
 | --- | --- | --- |
 | Lambda errors | `${env}-health-check-function-errors` | unhandled/runtime/DynamoDB/configuration failure occurred |
-| Lambda throttles | `${env}-health-check-function-throttles` | reserved concurrency was exhausted |
+| Lambda throttles | `${env}-health-check-function-throttles` | Lambda execution capacity was throttled; correlate with concurrency and traffic |
 | API Gateway 5XX | `${env}-health-check-api-5xx` | server-side API/integration failure |
 | API Gateway p95 latency | `${env}-health-check-api-latency` | latency exceeded the environment threshold for two periods |
 
@@ -139,17 +139,24 @@ Compare API Gateway `Latency` with `IntegrationLatency`:
 - both high: inspect Lambda execution, throttles, DynamoDB/KMS and VPC path;
 - API `Latency` high while integration latency is normal: investigate the API Gateway/request edge rather than scaling Lambda first.
 
-Check traffic volume and throttling before increasing concurrency. Reserved concurrency is intentionally a safety boundary as well as a capacity setting.
+Check traffic volume and throttling before increasing capacity. Production has explicit Lambda reserved concurrency; staging intentionally uses the account-shared concurrency pool because a very small reservation would violate the account's minimum unreserved-concurrency requirement. In both environments, API Gateway stage and per-key usage-plan limits remain the primary request-rate controls.
 
 ## 8. 429 / throttling
 
-The API has three independent limits:
+The API always has two explicit API Gateway limits:
 
-1. API Gateway method/stage throttle;
-2. API-key usage-plan throttle;
-3. Lambda reserved concurrency.
+1. method/stage rate and burst limits;
+2. API-key usage-plan rate and burst limits.
 
-A controlled burst returning some HTTP `429` in staging is expected and is explicitly verified by CI/CD.
+Production additionally has explicit Lambda reserved concurrency. Staging intentionally uses shared Lambda account concurrency while preserving the API Gateway controls.
+
+API Gateway describes throttling limits as best-effort targets rather than hard per-request ceilings. Therefore release gating does **not** depend on one timing-sensitive burst producing a `429`. `scripts/verify_staging_release.py` deterministically reads the live stage and usage-plan control plane and verifies:
+
+- GET and POST stage rate/burst values;
+- detailed method metrics remain enabled;
+- usage-plan rate/burst values;
+- association with the exact deployed API/stage;
+- association of the generated API key.
 
 If normal traffic is receiving 429s:
 
@@ -163,7 +170,7 @@ Do not disable throttling to make a test pass.
 
 ## 9. DynamoDB / KMS write failure
 
-The Lambda data-plane role can only call `dynamodb:PutItem` on the exact environment table. DynamoDB is accessed through the Gateway VPC Endpoint.
+The Lambda data-plane role can only call `dynamodb:PutItem` on the exact environment table. DynamoDB is accessed through the Gateway VPC Endpoint. Runtime KMS use is constrained to DynamoDB and the exact table/account encryption context; `kms:CreateGrant` remains a deployment/table-lifecycle permission rather than a Lambda runtime permission.
 
 Check:
 
@@ -197,28 +204,31 @@ Expected topology:
 - no active NAT Gateway;
 - security-group egress limited to HTTPS/443 toward the DynamoDB managed prefix list;
 - DynamoDB Gateway VPC Endpoint in the application VPC;
-- endpoint policy permits only `dynamodb:PutItem` on the exact table.
+- endpoint policy permits only `dynamodb:PutItem` on the exact table for the exact Lambda runtime role.
 
-The deployment verifier checks these live. If POST fails while GET remains healthy, inspect the VPC endpoint and its route-table association before adding Internet egress.
+The staging release verifier checks these live. If POST fails while GET remains healthy, inspect the VPC endpoint and its route-table association before adding Internet egress.
 
 ## 11. Failed Terraform deployment
 
 ### Before apply
 
-A failure in formatting, unit tests, Terraform tests, TFLint, IAM audit, Bandit, dependency audit, Checkov, Trivy, actionlint, zizmor or the saved-plan guard is a **deployment blocker**. Fix the underlying source or configuration. Do not bypass or disable the gate.
+A failure in formatting, unit tests, Terraform tests, TFLint, IAM audit, Bandit, dependency audit, Checkov, Trivy, actionlint, zizmor, CodeQL review, deployment-role preflight or the saved-plan guard is a **deployment blocker**. Fix the underlying source or configuration. Do not bypass or disable the gate.
 
 ### During apply
 
-If AWS creates a named object but Terraform fails before state ownership is safely recorded:
+If AWS creates or updates an object but Terraform fails before the operation completes:
 
-1. stop automatic retries;
+1. stop blind/manual retries;
 2. identify the exact AWS resource and Terraform address;
-3. inspect remote state;
-4. reconcile/import only that intended resource if appropriate;
-5. generate a fresh saved plan;
-6. review the new plan before apply.
+3. inspect the correct environment remote state;
+4. determine what AWS actually changed before altering anything;
+5. reconcile/import only an intended resource if state ownership was not recorded and import is appropriate;
+6. generate a fresh saved plan;
+7. review the new plan before any apply.
 
 Never use broad deletion to make the next apply start from a visually clean account.
+
+For production, the deployment workflow separately captures the pre-apply `prod-release` target. If apply starts and the workflow later fails, the fail-safe release rollback described in section 13 runs automatically when a previous release exists. That release rollback does **not** prove the rest of the partially applied infrastructure was reverted.
 
 ## 12. Drift detection failure
 
@@ -228,11 +238,15 @@ If that plan returns changes:
 
 1. treat the deployment as incomplete;
 2. do not start another deployment concurrently;
-3. identify whether drift is from AWS eventual consistency, a manual change or an unmanaged resource;
+3. identify whether drift is from AWS eventual consistency, a manual/emergency change or a partially applied resource;
 4. reconcile source/state intentionally;
 5. rerun the plan until the expected result is zero drift.
 
-## 13. Rollback
+An emergency production alias rollback intentionally creates drift if Terraform desired state still points to the failed new release. Do not hide that drift. Correct/revert source and run the normal reviewed deployment path.
+
+## 13. Rollback and production promotion safety
+
+### Normal rollback
 
 Preferred rollback is GitOps-based:
 
@@ -246,7 +260,29 @@ Preferred rollback is GitOps-based:
 
 The normal release path publishes an immutable Lambda version and moves `${env}-release`. API Gateway itself does not need to be manually repointed.
 
-For production, keep the GitHub Environment required-reviewer gate in place during rollback unless an organization-defined emergency process explicitly says otherwise.
+### Production preconditions
+
+Production is `workflow_dispatch` only. Before the `prod` Environment/OIDC deployment job is eligible to start, the workflow requires a successful **push-triggered staging deployment for the exact same Git SHA**. The `prod` GitHub Environment should also have required reviewers configured so a human approval gate occurs before protected environment variables and the OIDC token become available.
+
+### Automatic production release fail-safe
+
+Immediately before Terraform planning/apply, the workflow reads the current `prod-release` alias. If it exists, it records:
+
+- the previous numeric Lambda version;
+- that version's immutable `APP_VERSION` Git SHA.
+
+If Terraform apply starts and the deployment subsequently fails — including a partial apply failure or a post-apply verification/drift failure — the workflow attempts to restore `prod-release` to that previous numeric version. It then verifies both the restored alias version and the restored `APP_VERSION`.
+
+This reduces the time a bad Lambda release can stay on the live alias, but it is **not** a claim of zero-impact or two-phase/canary deployment. Other Terraform resources may already have changed. After an emergency alias rollback:
+
+1. treat the workflow as failed even if user traffic recovered;
+2. preserve logs and the Terraform plan/state evidence;
+3. inspect exactly which non-alias resources changed;
+4. revert/fix the source through review;
+5. run a fresh plan and the normal production flow;
+6. require all live verification and zero drift before declaring the deployment recovered.
+
+On an initial production deployment there is no previous alias target to restore; a failure after apply begins therefore requires direct incident recovery from Terraform/AWS evidence rather than pretending an automatic rollback is possible.
 
 ## 14. Post-incident record
 

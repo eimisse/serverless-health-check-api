@@ -20,10 +20,49 @@ jobs:
     permissions:
       contents: read # Required only so the reusable quality workflow can inspect repository source.
 
+  staging-proof:
+    if: github.ref == 'refs/heads/main'
+    name: Require exact SHA staging success
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read # Read only staging workflow-run conclusions for the exact commit.
+      contents: read
+
+    steps:
+      - name: Verify exact commit has a successful staging deployment
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          runs_json="$(
+            gh api --method GET \
+              -H "Accept: application/vnd.github+json" \
+              "/repos/${GITHUB_REPOSITORY}/actions/workflows/deploy-staging.yml/runs" \
+              -f branch=main \
+              -f event=push \
+              -f status=success \
+              -f head_sha="${GITHUB_SHA}" \
+              -f per_page=100
+          )"
+          success_count="$(
+            jq --arg sha "${GITHUB_SHA}" \
+              '[.workflow_runs[] | select(.head_sha == $sha and .head_branch == "main" and .event == "push" and .conclusion == "success")] | length' \
+              <<<"${runs_json}"
+          )"
+          if [ "${success_count}" -lt 1 ]; then
+            echo "Production promotion blocked: exact commit ${GITHUB_SHA} has no successful push-triggered Deploy staging run." >&2
+            exit 1
+          fi
+          echo "Exact commit ${GITHUB_SHA} has a successful staging deployment."
+
   deploy:
     # workflow_dispatch can target another ref; only reviewed main may obtain AWS credentials.
     if: github.ref == 'refs/heads/main'
-    needs: quality-gate
+    needs:
+      - quality-gate
+      - staging-proof
     name: Approve, deploy and verify prod
     runs-on: ubuntu-latest
     timeout-minutes: 35
@@ -102,6 +141,61 @@ jobs:
             --region "${AWS_REGION}" \
             --expected-account "${expected_account}"
 
+      - name: Capture current production release rollback target
+        id: capture-release
+        shell: bash
+        run: |
+          set -euo pipefail
+          function_name="prod-health-check-function"
+          alias_name="prod-release"
+          error_file="$(mktemp)"
+          set +e
+          previous_version="$(
+            aws lambda get-alias \
+              --function-name "${function_name}" \
+              --name "${alias_name}" \
+              --query FunctionVersion \
+              --output text \
+              2>"${error_file}"
+          )"
+          read_rc=$?
+          set -e
+
+          previous_app_version=""
+          if [ "${read_rc}" -ne 0 ]; then
+            if grep -q "ResourceNotFoundException" "${error_file}"; then
+              previous_version=""
+              echo "No previous prod-release alias exists; this is an initial production deployment."
+            else
+              cat "${error_file}" >&2
+              rm -f "${error_file}"
+              exit "${read_rc}"
+            fi
+          elif ! [[ "${previous_version}" =~ ^[0-9]+$ ]]; then
+            echo "Existing prod-release alias did not resolve to a numeric Lambda version." >&2
+            rm -f "${error_file}"
+            exit 1
+          else
+            previous_app_version="$(
+              aws lambda get-function-configuration \
+                --function-name "${function_name}" \
+                --qualifier "${previous_version}" \
+                --query 'Environment.Variables.APP_VERSION' \
+                --output text
+            )"
+            if ! [[ "${previous_app_version}" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "Existing prod-release version does not expose a valid immutable APP_VERSION Git SHA." >&2
+              rm -f "${error_file}"
+              exit 1
+            fi
+            echo "Captured previous prod-release Lambda version ${previous_version} (${previous_app_version}) for rollback."
+          fi
+          rm -f "${error_file}"
+          {
+            echo "PREVIOUS_PROD_RELEASE_VERSION=${previous_version}"
+            echo "PREVIOUS_PROD_APP_VERSION=${previous_app_version}"
+          } >> "${GITHUB_ENV}"
+
       - name: Initialize encrypted prod remote state
         shell: bash
         run: |
@@ -129,6 +223,7 @@ jobs:
         run: python scripts/check_terraform_plan.py terraform/tfplan.json --environment prod
 
       - name: Apply exact approved prod plan
+        id: apply
         run: terraform -chdir=terraform apply -input=false tfplan
 
       - name: Export non-secret Terraform outputs and mask API key
@@ -167,15 +262,19 @@ jobs:
           } >> "${GITHUB_ENV}"
 
       - name: Verify live prod functionality and security controls
+        id: verify-prod
         run: python scripts/verify_prod_deployment.py
 
       - name: Verify immutable Lambda release alias
+        id: verify-alias
         run: python scripts/verify_release_alias.py
 
       - name: Prove invalid requests cannot bypass API Gateway validation
+        id: verify-boundary
         run: python scripts/verify_gateway_boundary.py
 
       - name: Verify zero Terraform drift after deployment
+        id: zero-drift
         shell: bash
         run: |
           set +e
@@ -197,3 +296,58 @@ jobs:
             terraform -chdir=terraform show -no-color post-deploy.tfplan >&2
           fi
           exit "${exit_code}"
+
+      - name: Roll back production release alias after failed or cancelled deployment
+        # An undefined/skipped apply outcome means no Terraform mutation was attempted,
+        # so a pre-apply failure must never trigger the emergency alias rollback.
+        if: ${{ (failure() || cancelled()) && (steps.apply.outcome == 'success' || steps.apply.outcome == 'failure' || steps.apply.outcome == 'cancelled') }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${PREVIOUS_PROD_RELEASE_VERSION:-}" ]; then
+            echo "CRITICAL: production deployment failed or was cancelled after apply started, but no previous prod-release alias existed to restore." >&2
+            exit 1
+          fi
+
+          current_version="$(
+            aws lambda get-alias \
+              --function-name prod-health-check-function \
+              --name prod-release \
+              --query FunctionVersion \
+              --output text
+          )"
+
+          if [ "${current_version}" != "${PREVIOUS_PROD_RELEASE_VERSION}" ]; then
+            aws lambda update-alias \
+              --function-name prod-health-check-function \
+              --name prod-release \
+              --function-version "${PREVIOUS_PROD_RELEASE_VERSION}" \
+              >/dev/null
+          fi
+
+          restored_version="$(
+            aws lambda get-alias \
+              --function-name prod-health-check-function \
+              --name prod-release \
+              --query FunctionVersion \
+              --output text
+          )"
+          if [ "${restored_version}" != "${PREVIOUS_PROD_RELEASE_VERSION}" ]; then
+            echo "CRITICAL: prod-release rollback version verification failed." >&2
+            exit 1
+          fi
+
+          restored_app_version="$(
+            aws lambda get-function-configuration \
+              --function-name prod-health-check-function \
+              --qualifier "${restored_version}" \
+              --query 'Environment.Variables.APP_VERSION' \
+              --output text
+          )"
+          if [ "${restored_app_version}" != "${PREVIOUS_PROD_APP_VERSION}" ]; then
+            echo "CRITICAL: prod-release rollback APP_VERSION verification failed." >&2
+            exit 1
+          fi
+
+          echo "ROLLBACK COMPLETE: prod-release restored to Lambda version ${PREVIOUS_PROD_RELEASE_VERSION} (${PREVIOUS_PROD_APP_VERSION})."
+          echo "The emergency alias rollback intentionally creates Terraform drift; revert/fix the failed source and run the reviewed deployment flow before any later promotion."

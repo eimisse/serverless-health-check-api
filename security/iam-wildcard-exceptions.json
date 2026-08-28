@@ -318,15 +318,6 @@
       "reason": "KMS key policies use Resource star for the attached key; the exact runtime role is constrained to DynamoDB plus the exact table encryption context."
     },
     {
-      "id": "KMS-RUNTIME-DYNAMODB-GRANT",
-      "path": "terraform/modules/kms/main.tf",
-      "sid": "RuntimeRoleDynamoDBGrant",
-      "literal": "*",
-      "expected_count": 1,
-      "kind": "kms-key-policy-resource",
-      "reason": "KMS key policies use Resource star for the attached key; CreateGrant is restricted to AWS-resource grants through DynamoDB for the exact runtime role."
-    },
-    {
       "id": "DYNAMODB-ENDPOINT-ANY-PRINCIPAL-WITH-CONDITION",
       "path": "terraform/modules/network/main.tf",
       "sid": "AllowOnlyRuntimePutItemToApplicationTable",
