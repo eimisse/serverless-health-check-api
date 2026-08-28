@@ -82,13 +82,20 @@ def _log(level: int, event_name: str, **fields: Any) -> None:
     )
 
 
-def _response(status_code: int, body: dict[str, Any]) -> dict[str, Any]:
+def _response(
+    status_code: int,
+    body: dict[str, Any],
+    extra_headers: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    headers = {
+        "Cache-Control": "no-store",
+        "Content-Type": "application/json",
+    }
+    if extra_headers:
+        headers.update(extra_headers)
     return {
         "statusCode": status_code,
-        "headers": {
-            "Cache-Control": "no-store",
-            "Content-Type": "application/json",
-        },
+        "headers": headers,
         "body": json.dumps(body, separators=(",", ":")),
     }
 
@@ -194,4 +201,5 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     return _response(
         200,
         {"status": "healthy", "message": "Request processed and saved."},
+        {"X-Request-Id": request_id},
     )

@@ -108,6 +108,9 @@ class HandlerTests(unittest.TestCase):
         self.assertEqual("application/json", response["headers"]["Content-Type"])
         self.assertEqual("no-store", response["headers"]["Cache-Control"])
         self.assertEqual(1, len(self.table.items))
+        self.assertEqual(
+            self.table.items[0]["request_id"], response["headers"]["X-Request-Id"]
+        )
         self.assertEqual("candidate-test", self.table.items[0]["payload"])
         self.assertEqual(
             "attribute_not_exists(request_id)",
