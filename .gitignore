@@ -1,0 +1,47 @@
+# Terraform local state and generated plans
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfplan
+tfplan.json
+crash.log
+crash.*.log
+.terraformrc
+terraform.rc
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+*.auto.tfvars
+*.auto.tfvars.json
+
+# Build and test artifacts
+build/
+dist/
+*.zip
+.coverage
+coverage.xml
+htmlcov/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Local credentials and environment files
+.aws/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
