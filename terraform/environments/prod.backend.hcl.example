@@ -1,0 +1,6 @@
+bucket       = "REPLACE_WITH_TERRAFORM_STATE_BUCKET"
+key          = "env/prod/terraform.tfstate"
+region       = "REPLACE_WITH_BOOTSTRAP_REGION"
+kms_key_id   = "REPLACE_WITH_TERRAFORM_STATE_KMS_KEY_ARN"
+encrypt      = true
+use_lockfile = true
