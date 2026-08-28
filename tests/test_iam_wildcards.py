@@ -27,7 +27,7 @@ class IamWildcardAuditTests(unittest.TestCase):
             errors = audit(root, catalog)
             self.assertTrue(any("unreviewed wildcard" in error for error in errors))
 
-    def test_rejects_wildcard_action_even_if_catalogued(self):
+    def test_rejects_service_wildcard_action(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             terraform = root / "terraform"
@@ -40,7 +40,53 @@ class IamWildcardAuditTests(unittest.TestCase):
             errors = audit(root, catalog)
             self.assertTrue(any("wildcard IAM action" in error for error in errors))
 
-    def test_accepts_exact_catalogued_exception(self):
+    def test_rejects_bare_action_star_even_when_catalogued(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bootstrap = root / "bootstrap"
+            bootstrap.mkdir()
+            (bootstrap / "policy.tf").write_text(
+                'statement {\n  sid = "NeverAllowActionStar"\n  Action = "*"\n}\n',
+                encoding="utf-8",
+            )
+            catalog = self._write_catalog(
+                root,
+                [
+                    {
+                        "id": "INVALID-ACTION-EXCEPTION",
+                        "path": "bootstrap/policy.tf",
+                        "sid": "NeverAllowActionStar",
+                        "literal": "*",
+                        "expected_count": 1,
+                        "reason": "This synthetic exception must never make an IAM Action wildcard acceptable.",
+                    }
+                ],
+            )
+            errors = audit(root, catalog)
+            self.assertTrue(any("wildcard IAM action '*'" in error for error in errors))
+
+    def test_rejects_bare_action_star_in_multiline_actions_list(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            terraform = root / "terraform"
+            terraform.mkdir()
+            (terraform / "policy.tf").write_text(
+                (
+                    'statement {\n'
+                    '  sid = "MultilineAction"\n'
+                    '  actions = [\n'
+                    '    "logs:PutLogEvents",\n'
+                    '    "*",\n'
+                    '  ]\n'
+                    '}\n'
+                ),
+                encoding="utf-8",
+            )
+            catalog = self._write_catalog(root, [])
+            errors = audit(root, catalog)
+            self.assertTrue(any("wildcard IAM action '*'" in error for error in errors))
+
+    def test_accepts_exact_catalogued_resource_exception(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             bootstrap = root / "bootstrap"

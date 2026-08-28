@@ -22,11 +22,25 @@ REQUEST_TTL_DAYS = int(os.getenv("REQUEST_TTL_DAYS", "30"))
 MAX_PAYLOAD_LENGTH = int(os.getenv("MAX_PAYLOAD_LENGTH", "4096"))
 APP_VERSION = os.getenv("APP_VERSION", "unknown")
 
+_HEALTH_PATH = "/health"
 _SENSITIVE_HEADERS = frozenset(
     {
         "authorization",
         "cookie",
         "proxy-authorization",
+        "x-api-key",
+    }
+)
+_SENSITIVE_QUERY_PARAMETERS = frozenset(
+    {
+        "access_token",
+        "api-key",
+        "api_key",
+        "apikey",
+        "authorization",
+        "password",
+        "secret",
+        "token",
         "x-api-key",
     }
 )
@@ -44,21 +58,35 @@ def _get_table() -> Any:
     return _table
 
 
-def _redact_headers(headers: Any, *, multi_value: bool = False) -> Any:
-    """Return headers with known credential-bearing values removed."""
-    if not isinstance(headers, dict):
-        return headers
+def _redact_named_values(
+    values: Any,
+    sensitive_names: frozenset[str],
+    *,
+    multi_value: bool = False,
+) -> Any:
+    """Return a copied mapping with configured credential-bearing values removed."""
+    if not isinstance(values, dict):
+        return values
 
-    redacted = copy.deepcopy(headers)
+    redacted = copy.deepcopy(values)
     replacement: str | list[str] = ["[REDACTED]"] if multi_value else "[REDACTED]"
     for key in redacted:
-        if isinstance(key, str) and key.casefold() in _SENSITIVE_HEADERS:
+        if isinstance(key, str) and key.casefold() in sensitive_names:
             redacted[key] = replacement
     return redacted
 
 
+def _redact_headers(headers: Any, *, multi_value: bool = False) -> Any:
+    """Return headers with known credential-bearing values removed."""
+    return _redact_named_values(
+        headers,
+        _SENSITIVE_HEADERS,
+        multi_value=multi_value,
+    )
+
+
 def _sanitize_event(event: dict[str, Any]) -> dict[str, Any]:
-    """Copy an API Gateway event and redact authentication headers for logging."""
+    """Copy an API Gateway event and redact credentials before logging it."""
     sanitized = copy.deepcopy(event)
     if "headers" in sanitized:
         sanitized["headers"] = _redact_headers(sanitized["headers"])
@@ -66,6 +94,27 @@ def _sanitize_event(event: dict[str, Any]) -> dict[str, Any]:
         sanitized["multiValueHeaders"] = _redact_headers(
             sanitized["multiValueHeaders"], multi_value=True
         )
+    if "queryStringParameters" in sanitized:
+        sanitized["queryStringParameters"] = _redact_named_values(
+            sanitized["queryStringParameters"],
+            _SENSITIVE_QUERY_PARAMETERS,
+        )
+    if "multiValueQueryStringParameters" in sanitized:
+        sanitized["multiValueQueryStringParameters"] = _redact_named_values(
+            sanitized["multiValueQueryStringParameters"],
+            _SENSITIVE_QUERY_PARAMETERS,
+            multi_value=True,
+        )
+
+    # REST API Gateway can expose the plaintext usage-plan key through
+    # requestContext.identity.apiKey in addition to the x-api-key header.
+    # Redact that second representation before serializing the full event.
+    request_context = sanitized.get("requestContext")
+    if isinstance(request_context, dict):
+        identity = request_context.get("identity")
+        if isinstance(identity, dict) and "apiKey" in identity:
+            identity["apiKey"] = "[REDACTED]"
+
     return sanitized
 
 
@@ -158,6 +207,11 @@ def _http_method(event: dict[str, Any]) -> str:
     return method.upper() if isinstance(method, str) else "POST"
 
 
+def _request_path(event: dict[str, Any]) -> str:
+    path = event.get("path", _HEALTH_PATH)
+    return path if isinstance(path, str) else ""
+
+
 def _health_response() -> dict[str, Any]:
     return _response(
         200,
@@ -172,6 +226,11 @@ def _health_response() -> dict[str, Any]:
 def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     """Serve GET health checks or validate and persist POST requests."""
     _log(logging.INFO, "incoming_request", request=_sanitize_event(event))
+
+    path = _request_path(event)
+    if path != _HEALTH_PATH:
+        _log(logging.WARNING, "request_rejected", reason="route_not_found", path=path)
+        return _response(404, {"status": "error", "message": "Route not found."})
 
     method = _http_method(event)
     if method == "GET":
@@ -200,7 +259,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         "timestamp": now.isoformat().replace("+00:00", "Z"),
         "expires_at": int((now + timedelta(days=REQUEST_TTL_DAYS)).timestamp()),
         "http_method": method,
-        "path": event.get("path", "/health"),
+        "path": path,
         "payload": payload,
         "source_ip": identity.get("sourceIp", "unknown"),
         "user_agent": identity.get("userAgent", "unknown"),

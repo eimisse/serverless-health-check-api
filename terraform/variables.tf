@@ -96,12 +96,18 @@ variable "lambda_timeout_seconds" {
 }
 
 variable "lambda_reserved_concurrency" {
-  description = "Reserved concurrency cap used as a cost and abuse control."
+  description = "Lambda reserved concurrency. Use -1 to share the account concurrency pool when the account quota cannot support a reservation; API Gateway throttles still bound this workload."
   type        = number
 
   validation {
-    condition     = var.lambda_reserved_concurrency >= 1 && floor(var.lambda_reserved_concurrency) == var.lambda_reserved_concurrency
-    error_message = "lambda_reserved_concurrency must be a positive integer."
+    condition = (
+      var.lambda_reserved_concurrency == -1 ||
+      (
+        var.lambda_reserved_concurrency >= 1 &&
+        floor(var.lambda_reserved_concurrency) == var.lambda_reserved_concurrency
+      )
+    )
+    error_message = "lambda_reserved_concurrency must be -1 or a positive integer."
   }
 }
 

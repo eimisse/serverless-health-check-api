@@ -1,6 +1,6 @@
 mock_provider "aws" {}
 
-run "lambda_has_bounded_private_runtime" {
+run "lambda_has_quota_compatible_private_runtime" {
   command = plan
 
   module {
@@ -17,7 +17,7 @@ run "lambda_has_bounded_private_runtime" {
     application_version  = "0123456789abcdef0123456789abcdef01234567"
     memory_size          = 128
     timeout_seconds      = 5
-    reserved_concurrency = 2
+    reserved_concurrency = -1
     request_ttl_days     = 30
     max_payload_length   = 4096
     log_retention_days   = 14
@@ -34,12 +34,12 @@ run "lambda_has_bounded_private_runtime" {
       aws_lambda_function.health.function_name == "staging-health-check-function" &&
       aws_lambda_function.health.runtime == "python3.14" &&
       aws_lambda_function.health.architectures[0] == "arm64" &&
-      aws_lambda_function.health.reserved_concurrent_executions == 2 &&
+      aws_lambda_function.health.reserved_concurrent_executions == -1 &&
       aws_lambda_function.health.timeout == 5 &&
       aws_lambda_function.health.memory_size == 128 &&
       length(aws_lambda_function.health.vpc_config[0].subnet_ids) == 2
     )
-    error_message = "Lambda must remain a small, bounded Python 3.14 ARM64 runtime in both private subnets."
+    error_message = "Staging Lambda must remain a small Python 3.14 ARM64 runtime in both private subnets and use the account shared concurrency pool when quota cannot support a reservation."
   }
 
   assert {
@@ -61,11 +61,15 @@ run "lambda_has_bounded_private_runtime" {
     error_message = "Lambda runtime configuration must point at the exact table and immutable release/validation settings."
   }
 
+  # The published version number is computed by AWS and is intentionally unknown
+  # during a plan-only mock. Plan/live verification separately rejects $LATEST.
   assert {
     condition = (
       aws_lambda_function.health.publish &&
-      aws_lambda_function.health.source_code_hash == filebase64sha256("../build/lambda.zip")
+      aws_lambda_function.health.source_code_hash == filebase64sha256("../build/lambda.zip") &&
+      aws_lambda_alias.release.name == "staging-release" &&
+      aws_lambda_alias.release.function_name == "staging-health-check-function"
     )
-    error_message = "The deterministic package hash must drive published Lambda versions."
+    error_message = "The deterministic package must publish an immutable Lambda version behind the environment release alias."
   }
 }

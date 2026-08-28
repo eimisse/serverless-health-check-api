@@ -14,6 +14,11 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
+# Staging intentionally has a low per-key request rate. Functional checks are paced
+# below that limit so they test behavior rather than accidentally testing throttling.
+FUNCTIONAL_REQUEST_INTERVAL_SECONDS = 0.6
+THROTTLE_RECOVERY_SECONDS = 3.0
+
 
 @dataclass(frozen=True)
 class Config:
@@ -132,6 +137,8 @@ def http_request(
             return response.status, dict(response.headers.items()), response.read()
     except urllib.error.HTTPError as exc:
         return exc.code, dict(exc.headers.items()), exc.read()
+    except urllib.error.URLError as exc:
+        raise VerificationError(f"API request failed before an HTTP response: {exc.reason}") from exc
 
 
 def json_request(
@@ -182,6 +189,11 @@ def wait_for_dynamodb_item(
     raise VerificationError("valid API request was not persisted to DynamoDB")
 
 
+def cloudwatch_exact_phrase(value: str) -> str:
+    """Return a safe CloudWatch Logs filter pattern for one exact literal phrase."""
+    return json.dumps(value)
+
+
 def filter_lambda_logs(
     config: Config, marker: str, start_time_ms: int
 ) -> list[str]:
@@ -194,7 +206,7 @@ def filter_lambda_logs(
         "--start-time",
         str(start_time_ms),
         "--filter-pattern",
-        marker,
+        cloudwatch_exact_phrase(marker),
     )
     events = response.get("events", [])
     if not isinstance(events, list):
@@ -220,6 +232,25 @@ def wait_for_log_marker(
             return messages
         time.sleep(2)
     raise VerificationError(f"Lambda log marker did not appear: {marker}")
+
+
+def prove_marker_absent_after_log_barrier(
+    config: Config, marker: str, start_time_ms: int
+) -> None:
+    """Use a later read-only Lambda invocation as a CloudWatch ingestion barrier."""
+    barrier = f"log-barrier-{uuid.uuid4().hex}"
+    status, _, _ = http_request(
+        config,
+        method="GET",
+        api_key=config.api_key,
+        extra_headers={"X-Verification-Barrier": barrier},
+    )
+    check(status == 200, "read-only Lambda log barrier returns HTTP 200")
+    wait_for_log_marker(config, barrier, start_time_ms)
+    check(
+        not filter_lambda_logs(config, marker, start_time_ms),
+        "rejected request marker is absent after a later Lambda log is observable",
+    )
 
 
 def verify_get_health(config: Config) -> None:
@@ -309,6 +340,7 @@ def verify_negative_requests(config: Config) -> None:
     for body, expected, label in cases:
         status, _, _ = http_request(config, body=body, api_key=config.api_key)
         check(status == expected, f"API Gateway rejects {label} with HTTP {expected}")
+        time.sleep(FUNCTIONAL_REQUEST_INTERVAL_SECONDS)
 
     status, _, _ = json_request(config, {"payload": "no-key"}, api_key=None)
     check(status == 403, "POST /health without API key is rejected with HTTP 403")
@@ -326,13 +358,10 @@ def verify_gateway_rejects_before_lambda(config: Config) -> None:
         api_key=config.api_key,
     )
     check(status == 400, "strict request model rejects the early-rejection probe")
-
-    # CloudWatch ingestion is eventually consistent. A short delay makes the absence
-    # check meaningful; a separate valid marker test has already proven log lookup works.
-    time.sleep(6)
-    messages = filter_lambda_logs(config, marker, started_ms)
+    time.sleep(FUNCTIONAL_REQUEST_INTERVAL_SECONDS)
+    prove_marker_absent_after_log_barrier(config, marker, started_ms)
     check(
-        not messages,
+        not filter_lambda_logs(config, marker, started_ms),
         "invalid request is rejected by API Gateway before Lambda execution",
     )
 
@@ -452,22 +481,27 @@ def verify_network(config: Config) -> None:
 
 
 def verify_controlled_throttling(config: Config) -> None:
+    # Refill the deliberately small staging token bucket before the dedicated burst.
+    time.sleep(THROTTLE_RECOVERY_SECONDS)
     statuses: list[int] = []
-    burst_id = uuid.uuid4().hex
-    for attempt in range(2):
-        for index in range(12):
-            status, _, _ = json_request(
+    for _ in range(2):
+        for _ in range(12):
+            status, _, _ = http_request(
                 config,
-                {"payload": f"throttle-{burst_id}-{attempt}-{index}"},
+                method="GET",
                 api_key=config.api_key,
             )
             statuses.append(status)
         if 429 in statuses:
             break
+
     check(200 in statuses, "controlled throttling probe still permits valid requests")
-    check(429 in statuses, "controlled request burst produces API Gateway HTTP 429 throttling")
+    check(429 in statuses, "controlled GET burst produces API Gateway HTTP 429 throttling")
     unexpected = sorted({status for status in statuses if status not in {200, 429}})
     check(not unexpected, f"controlled throttling probe has no unexpected HTTP status: {unexpected}")
+
+    # Leave the per-key bucket recovered for any verification step that follows.
+    time.sleep(THROTTLE_RECOVERY_SECONDS)
 
 
 def main() -> int:

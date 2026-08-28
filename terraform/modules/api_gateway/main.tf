@@ -49,10 +49,14 @@ resource "aws_cloudwatch_log_group" "access" {
 }
 
 resource "aws_api_gateway_rest_api" "health" {
-  name            = local.api_name
-  description     = "API-key protected health check and request ingestion endpoint"
-  security_policy = "TLS_1_2"
+  name                 = local.api_name
+  description          = "API-key protected health check and request ingestion endpoint"
+  security_policy      = "SecurityPolicy_TLS13_1_2_2021_06"
+  endpoint_access_mode = "BASIC"
 
+  # Enhanced REST API policies configure the default execute-api endpoint and
+  # require an endpoint access mode. This policy excludes TLS 1.0 while keeping
+  # broad TLS 1.2 compatibility and TLS 1.3 support.
   endpoint_configuration {
     types = ["REGIONAL"]
   }
@@ -88,6 +92,7 @@ resource "aws_api_gateway_request_validator" "body" {
 }
 
 resource "aws_api_gateway_method" "get" {
+  #checkov:skip=CKV2_AWS_53:GET /health accepts no request body or declared request parameters; API-key enforcement and the Lambda method allowlist are the applicable controls.
   rest_api_id      = aws_api_gateway_rest_api.health.id
   resource_id      = aws_api_gateway_resource.health.id
   http_method      = "GET"

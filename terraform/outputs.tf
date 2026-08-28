@@ -48,6 +48,21 @@ output "lambda_function_name" {
   value       = module.lambda.function_name
 }
 
+output "lambda_release_alias_name" {
+  description = "Environment release alias used by API Gateway instead of unqualified $LATEST."
+  value       = module.lambda.release_alias_name
+}
+
+output "lambda_release_alias_arn" {
+  description = "Alias-qualified Lambda ARN for the current environment release."
+  value       = module.lambda.release_alias_arn
+}
+
+output "lambda_release_version" {
+  description = "Published immutable Lambda version currently targeted by the release alias."
+  value       = module.lambda.release_version
+}
+
 output "lambda_log_group_name" {
   description = "Environment-prefixed CloudWatch log group used by Lambda."
   value       = module.lambda.log_group_name

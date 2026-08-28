@@ -14,25 +14,34 @@ concurrency:
 
 env:
   TF_IN_AUTOMATION: "true"
-  AWS_REGION: ${{ vars.AWS_REGION }}
-  AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
-  TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
-  TF_STATE_KMS_KEY_ARN: ${{ vars.TF_STATE_KMS_KEY_ARN }}
 
 jobs:
+  quality-gate:
+    if: github.ref == 'refs/heads/main'
+    name: Credential-free quality and security gates
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read # Required only so the reusable quality workflow can inspect repository source.
+
   deploy:
     # workflow_dispatch can target another ref; only reviewed main may obtain AWS credentials.
     if: github.ref == 'refs/heads/main'
-    name: Validate, deploy and verify staging
+    needs: quality-gate
+    name: Deploy and verify staging
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 30
     environment: staging
     permissions:
-      contents: read
-      id-token: write # GitHub OIDC mints the short-lived token exchanged with AWS STS.
+      contents: read # Required for checkout of the exact reviewed commit.
+      id-token: write # Required only to exchange GitHub OIDC for short-lived AWS STS credentials.
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      AWS_DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+      TF_STATE_KMS_KEY_ARN: ${{ vars.TF_STATE_KMS_KEY_ARN }}
 
     steps:
-      - name: Checkout
+      - name: Checkout reviewed source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -52,22 +61,6 @@ jobs:
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
-          cache: pip
-          cache-dependency-path: lambda/requirements-dev.txt
-
-      - name: Install test and security tooling
-        run: |
-          python -m pip install --disable-pip-version-check -r lambda/requirements-dev.txt
-          python -m pip install --disable-pip-version-check \
-            bandit==1.9.4 \
-            checkov==3.3.15 \
-            pip-audit==2.10.1
-
-      - name: Compile and unit test
-        run: |
-          python -m compileall -q lambda scripts tests
-          python -m unittest discover -s lambda/tests -p 'test_*.py' -v
-          python -m unittest discover -s tests -p 'test_*.py' -v
 
       - name: Build deterministic Lambda release
         run: |
@@ -79,46 +72,6 @@ jobs:
         with:
           terraform_version: 1.16.0
           terraform_wrapper: false
-
-      - name: Validate Terraform before AWS access
-        run: |
-          terraform fmt -check -diff -recursive
-          terraform -chdir=terraform init -backend=false
-          git diff --exit-code -- terraform/.terraform.lock.hcl
-          terraform -chdir=terraform validate
-          terraform -chdir=terraform test -no-color
-
-      - name: Audit IAM wildcard exceptions
-        run: python scripts/check_iam_wildcards.py
-
-      - name: Run Python security and dependency scans
-        run: |
-          bandit -r lambda scripts -x lambda/tests -ll -ii
-          pip-audit -r lambda/requirements.txt
-          pip-audit -r lambda/requirements-dev.txt
-
-      - name: Checkov application IaC gate
-        run: checkov -d terraform --framework terraform --quiet --compact
-
-      - name: Trivy application IaC gate
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          scan-type: config
-          scan-ref: terraform
-          exit-code: "1"
-          severity: HIGH,CRITICAL
-          format: table
-          cache: "true"
-
-      - name: Trivy repository secret gate
-        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          scan-type: fs
-          scan-ref: .
-          scanners: secret
-          exit-code: "1"
-          format: table
-          cache: "true"
 
       - name: Configure temporary AWS credentials with GitHub OIDC
         uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
@@ -139,6 +92,16 @@ jobs:
             exit 1
           fi
           echo "AWS caller identity verified against the staging deployment role."
+
+      - name: Preflight live deployment-role read capabilities
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected_account="$(printf '%s' "${AWS_DEPLOY_ROLE_ARN}" | cut -d: -f5)"
+          python scripts/preflight_deployment_role.py \
+            --environment staging \
+            --region "${AWS_REGION}" \
+            --expected-account "${expected_account}"
 
       - name: Initialize encrypted staging remote state
         shell: bash
@@ -167,14 +130,19 @@ jobs:
         run: python scripts/check_terraform_plan.py terraform/tfplan.json --environment staging
 
       - name: Apply exact reviewed staging plan
+        id: apply
         run: terraform -chdir=terraform apply -input=false tfplan
 
       - name: Export non-secret Terraform outputs and mask API key
+        id: export-runtime
         shell: bash
         run: |
           set -euo pipefail
+          api_id="$(terraform -chdir=terraform output -raw api_id)"
           api_url="$(terraform -chdir=terraform output -raw api_url)"
           api_key_id="$(terraform -chdir=terraform output -raw api_key_id)"
+          api_stage_name="$(terraform -chdir=terraform output -raw api_stage_name)"
+          api_usage_plan_id="$(terraform -chdir=terraform output -raw api_usage_plan_id)"
           lambda_name="$(terraform -chdir=terraform output -raw lambda_function_name)"
           table_name="$(terraform -chdir=terraform output -raw dynamodb_table_name)"
           table_arn="$(terraform -chdir=terraform output -raw dynamodb_table_arn)"
@@ -182,6 +150,10 @@ jobs:
           vpc_id="$(terraform -chdir=terraform output -raw vpc_id)"
           subnet_ids="$(terraform -chdir=terraform output -json private_subnet_ids | jq -r 'join(",")')"
           endpoint_id="$(terraform -chdir=terraform output -raw dynamodb_vpc_endpoint_id)"
+          stage_rate="$(terraform -chdir=terraform output -raw stage_throttle_rate_limit)"
+          stage_burst="$(terraform -chdir=terraform output -raw stage_throttle_burst_limit)"
+          usage_rate="$(terraform -chdir=terraform output -raw usage_plan_rate_limit)"
+          usage_burst="$(terraform -chdir=terraform output -raw usage_plan_burst_limit)"
           api_key="$(aws apigateway get-api-key --api-key "${api_key_id}" --include-value --query value --output text)"
 
           if [ -z "${api_key}" ] || [ "${api_key}" = "None" ]; then
@@ -192,8 +164,16 @@ jobs:
 
           {
             echo "ENVIRONMENT=staging"
+            echo "API_ID=${api_id}"
             echo "API_URL=${api_url}"
+            echo "API_KEY_ID=${api_key_id}"
             echo "API_KEY=${api_key}"
+            echo "API_STAGE_NAME=${api_stage_name}"
+            echo "API_USAGE_PLAN_ID=${api_usage_plan_id}"
+            echo "STAGE_THROTTLE_RATE_LIMIT=${stage_rate}"
+            echo "STAGE_THROTTLE_BURST_LIMIT=${stage_burst}"
+            echo "USAGE_PLAN_RATE_LIMIT=${usage_rate}"
+            echo "USAGE_PLAN_BURST_LIMIT=${usage_burst}"
             echo "LAMBDA_FUNCTION_NAME=${lambda_name}"
             echo "DYNAMODB_TABLE_NAME=${table_name}"
             echo "DYNAMODB_TABLE_ARN=${table_arn}"
@@ -205,12 +185,18 @@ jobs:
           } >> "${GITHUB_ENV}"
 
       - name: Verify live staging functionality and security controls
-        run: python scripts/verify_deployment.py
+        run: python scripts/verify_staging_release.py
 
-      - name: Prove Content-Type cannot bypass API Gateway validation
+      - name: Verify immutable Lambda release alias
+        if: ${{ always() && steps.apply.outcome == 'success' && steps.export-runtime.outcome == 'success' }}
+        run: python scripts/verify_release_alias.py
+
+      - name: Prove invalid requests cannot bypass API Gateway validation
+        if: ${{ always() && steps.apply.outcome == 'success' && steps.export-runtime.outcome == 'success' }}
         run: python scripts/verify_gateway_boundary.py
 
       - name: Verify zero Terraform drift after deployment
+        if: ${{ always() && steps.apply.outcome == 'success' }}
         shell: bash
         run: |
           set +e

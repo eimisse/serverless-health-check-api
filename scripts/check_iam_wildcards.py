@@ -13,6 +13,7 @@ from typing import Iterable
 
 STRING_RE = re.compile(r'"((?:\\.|[^"\\])*)"')
 SID_RE = re.compile(r'\b(?:sid|Sid)\s*=\s*"([A-Za-z0-9_-]+)"')
+ACTION_ASSIGN_RE = re.compile(r"\b(?:actions|Action)\s*=")
 ACTION_WILDCARD_RE = re.compile(r"^[a-z0-9-]+:\*$", re.IGNORECASE)
 
 
@@ -102,6 +103,65 @@ def _nearest_sid(lines: list[str], line_number: int) -> str | None:
     return None
 
 
+def _square_bracket_delta(text: str) -> int:
+    """Count HCL list brackets outside quoted strings."""
+    delta = 0
+    in_string = False
+    escaped = False
+    for char in text:
+        if escaped:
+            escaped = False
+            continue
+        if char == "\\" and in_string:
+            escaped = True
+            continue
+        if char == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if char == "[":
+            delta += 1
+        elif char == "]":
+            delta -= 1
+    return delta
+
+
+def _action_wildcard_locations(lines: list[str]) -> set[tuple[int, str]]:
+    """Find literal wildcard values assigned directly to IAM Action/actions fields."""
+    locations: set[tuple[int, str]] = set()
+    in_block_comment = False
+    action_list_depth = 0
+
+    for line_index, raw_line in enumerate(lines, start=1):
+        line, in_block_comment = _strip_block_comments(raw_line, in_block_comment)
+        code = _strip_line_comment(line)
+
+        segment: str | None = None
+        if action_list_depth > 0:
+            segment = code
+        else:
+            assignment = ACTION_ASSIGN_RE.search(code)
+            if assignment:
+                segment = code[assignment.end() :]
+
+        if segment is None:
+            continue
+
+        for match in STRING_RE.finditer(segment):
+            literal = _decode_hcl_string(match.group(1))
+            if literal == "*" or ACTION_WILDCARD_RE.fullmatch(literal):
+                locations.add((line_index, literal))
+
+        delta = _square_bracket_delta(segment)
+        if action_list_depth > 0:
+            action_list_depth = max(0, action_list_depth + delta)
+        elif delta > 0:
+            action_list_depth = delta
+
+    return locations
+
+
 def _is_suspicious_wildcard(literal: str) -> bool:
     if "*" not in literal:
         return False
@@ -181,6 +241,7 @@ def audit(root: Path, catalog_path: Path) -> list[str]:
     for path in _source_files(root):
         rel_path = path.relative_to(root).as_posix()
         lines = path.read_text(encoding="utf-8").splitlines()
+        action_wildcards = _action_wildcard_locations(lines)
         in_block_comment = False
         for line_index, raw_line in enumerate(lines, start=1):
             line, in_block_comment = _strip_block_comments(raw_line, in_block_comment)
@@ -194,7 +255,9 @@ def audit(root: Path, catalog_path: Path) -> list[str]:
                 key = (rel_path, sid, literal)
                 observed[key] += 1
 
-                if ACTION_WILDCARD_RE.fullmatch(literal):
+                # Action wildcards are an absolute policy violation and cannot be
+                # legitimized by adding an exception catalogue entry.
+                if (line_index, literal) in action_wildcards or ACTION_WILDCARD_RE.fullmatch(literal):
                     errors.append(
                         f"{rel_path}:{line_index}: wildcard IAM action '{literal}' is prohibited"
                     )

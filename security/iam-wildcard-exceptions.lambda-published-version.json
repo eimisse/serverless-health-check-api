@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "exceptions": [
+    {
+      "id": "DEPLOY-LAMBDA-PUBLISHED-VERSION-READ",
+      "path": "bootstrap/deployment_lambda_published_version_read_permissions.tf",
+      "sid": "ReadPublishedLambdaVersionConfiguration",
+      "literal": "${local.resource_arns[each.key].function}:*",
+      "expected_count": 1,
+      "kind": "resource-arn-version-family",
+      "reason": "Terraform polls the AWS-generated numeric Lambda version after PublishVersion. The wildcard is limited to qualified versions of the exact environment-prefixed function, and this statement grants only GetFunctionConfiguration read access."
+    }
+  ]
+}

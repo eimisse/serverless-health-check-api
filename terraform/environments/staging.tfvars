@@ -9,7 +9,7 @@ private_subnet_cidrs = [
 
 lambda_memory_size          = 128
 lambda_timeout_seconds      = 5
-lambda_reserved_concurrency = 2
+lambda_reserved_concurrency = -1
 log_retention_days          = 14
 request_ttl_days            = 30
 max_payload_length          = 4096

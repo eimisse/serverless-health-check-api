@@ -212,18 +212,18 @@ data "aws_iam_policy_document" "deployment_api_gateway_guardrails" {
     }
   }
 
-  # RestApi, Stage, API key and UsagePlan create APIs all accept tags inline.
-  # Generic TagResource could otherwise be used to tag an unrelated API resource
-  # into the allowed ResourceTag boundary. Forbid post-create API Gateway tag
-  # mutation entirely; Terraform may still read tags.
+  # The AWS Terraform provider uses API Gateway's TagResource endpoint after
+  # creating REST APIs and API keys. TagResource is PUT /tags/{resource_arn}, so
+  # PUT must remain available to Terraform. Keep other post-create tag mutation
+  # verbs denied; resource-tree guardrails still enforce the environment/project
+  # boundary for normal API Gateway management operations.
   statement {
-    sid    = "DenyApiGatewayTagMutation"
+    sid    = "DenyApiGatewayNonPutTagMutation"
     effect = "Deny"
     actions = [
       "apigateway:DELETE",
       "apigateway:PATCH",
       "apigateway:POST",
-      "apigateway:PUT",
     ]
     resources = [local.resource_arns[each.key].api_gateway_tags]
   }

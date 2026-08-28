@@ -1,6 +1,4 @@
 mock_provider "aws" {
-  override_during = plan
-
   mock_resource "aws_api_gateway_rest_api" {
     defaults = {
       execution_arn    = "arn:aws:execute-api:eu-west-1:123456789012:api1234567"
@@ -30,7 +28,8 @@ run "health_api_security_contract" {
     aws_partition              = "aws"
     aws_account_id             = "123456789012"
     lambda_function_name       = "staging-health-check-function"
-    lambda_invoke_arn          = "arn:aws:apigateway:eu-west-1:lambda:path/2015-03-31/functions/arn:aws:lambda:eu-west-1:123456789012:function:staging-health-check-function/invocations"
+    lambda_qualifier           = "staging-release"
+    lambda_invoke_arn          = "arn:aws:apigateway:eu-west-1:lambda:path/2015-03-31/functions/arn:aws:lambda:eu-west-1:123456789012:function:staging-health-check-function:staging-release/invocations"
     max_payload_length         = 4096
     log_retention_days         = 14
     stage_throttle_rate_limit  = 5
@@ -54,6 +53,15 @@ run "health_api_security_contract" {
       aws_api_gateway_usage_plan.health.name == "staging-health-check-usage-plan"
     )
     error_message = "Customer-named API resources must retain the staging- prefix."
+  }
+
+  assert {
+    condition = (
+      aws_api_gateway_rest_api.health.security_policy == "SecurityPolicy_TLS13_1_2_2021_06" &&
+      aws_api_gateway_rest_api.health.endpoint_access_mode == "BASIC" &&
+      aws_api_gateway_rest_api.health.endpoint_configuration[0].types[0] == "REGIONAL"
+    )
+    error_message = "REST API must retain the live-compatible TLS 1.2/1.3 security policy, BASIC access mode, and REGIONAL endpoint."
   }
 
   assert {
@@ -101,6 +109,14 @@ run "health_api_security_contract" {
 
   assert {
     condition = (
+      aws_api_gateway_integration.lambda_get.uri == var.lambda_invoke_arn &&
+      aws_api_gateway_integration.lambda.uri == var.lambda_invoke_arn
+    )
+    error_message = "GET and POST must invoke the immutable environment release alias, never unqualified $LATEST."
+  }
+
+  assert {
+    condition = (
       aws_api_gateway_method_settings.get.settings[0].throttling_rate_limit == 5 &&
       aws_api_gateway_method_settings.get.settings[0].throttling_burst_limit == 10 &&
       aws_api_gateway_method_settings.post.settings[0].throttling_rate_limit == 5 &&
@@ -120,15 +136,17 @@ run "health_api_security_contract" {
     error_message = "Request-body tracing and API caching must remain disabled for this write path."
   }
 
+  # execution_arn/source_arn values are provider-computed during a plan-only mock.
+  # Exact stage/method/path scoping is enforced by the saved-plan guard and live verifier.
   assert {
     condition = (
       aws_lambda_permission.api_gateway_get.action == "lambda:InvokeFunction" &&
+      aws_lambda_permission.api_gateway_get.qualifier == "staging-release" &&
       aws_lambda_permission.api_gateway_get.principal == "apigateway.amazonaws.com" &&
-      aws_lambda_permission.api_gateway_get.source_arn == "${aws_api_gateway_rest_api.health.execution_arn}/staging-health-check-stage/GET/health" &&
       aws_lambda_permission.api_gateway.action == "lambda:InvokeFunction" &&
-      aws_lambda_permission.api_gateway.principal == "apigateway.amazonaws.com" &&
-      aws_lambda_permission.api_gateway.source_arn == "${aws_api_gateway_rest_api.health.execution_arn}/staging-health-check-stage/POST/health"
+      aws_lambda_permission.api_gateway.qualifier == "staging-release" &&
+      aws_lambda_permission.api_gateway.principal == "apigateway.amazonaws.com"
     )
-    error_message = "API Gateway invoke permission must stay scoped to the exact environment stage, methods and /health path."
+    error_message = "API Gateway invoke permission must stay alias-qualified and trust only API Gateway."
   }
 }

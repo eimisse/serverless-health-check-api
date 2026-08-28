@@ -51,9 +51,9 @@ resource "aws_security_group" "lambda" {
   description = "No ingress; HTTPS egress only to the regional DynamoDB prefix list"
   vpc_id      = aws_vpc.this.id
 
-  ingress = []
-  egress  = []
-
+  # Do not configure ingress/egress inline here. Rules are managed only by the
+  # dedicated aws_vpc_security_group_*_rule resources below. Mixing both models
+  # can make aws_security_group remove a separately managed rule during refresh/apply.
   tags = merge(var.tags, {
     Name = "${local.name_prefix}-function-sg"
   })

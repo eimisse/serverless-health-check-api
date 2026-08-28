@@ -30,8 +30,9 @@ locals {
 
   resource_arns = {
     for environment in local.environments : environment => {
-      function = "arn:${local.partition}:lambda:${var.aws_region}:${local.account_id}:function:${environment}-health-check-function"
-      table    = "arn:${local.partition}:dynamodb:${var.aws_region}:${local.account_id}:table/${environment}-requests-db"
+      function       = "arn:${local.partition}:lambda:${var.aws_region}:${local.account_id}:function:${environment}-health-check-function"
+      function_alias = "arn:${local.partition}:lambda:${var.aws_region}:${local.account_id}:function:${environment}-health-check-function:${environment}-release"
+      table          = "arn:${local.partition}:dynamodb:${var.aws_region}:${local.account_id}:table/${environment}-requests-db"
 
       runtime_role = "arn:${local.partition}:iam::${local.account_id}:role/${environment}-health-check-function-role"
 

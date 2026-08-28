@@ -61,6 +61,15 @@ run "network_is_private_and_dynamodb_only" {
 
   assert {
     condition = (
+      !strcontains(file("${path.module}/main.tf"), "ingress = [") &&
+      !strcontains(file("${path.module}/main.tf"), "egress  = [") &&
+      !strcontains(file("${path.module}/main.tf"), "egress = [")
+    )
+    error_message = "Security group rules must be owned only by dedicated aws_vpc_security_group_*_rule resources; inline rule management can overwrite them."
+  }
+
+  assert {
+    condition = (
       aws_vpc_security_group_egress_rule.dynamodb_https.prefix_list_id == "pl-12345678" &&
       aws_vpc_security_group_egress_rule.dynamodb_https.from_port == 443 &&
       aws_vpc_security_group_egress_rule.dynamodb_https.to_port == 443 &&

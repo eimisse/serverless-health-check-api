@@ -104,6 +104,29 @@ class HandlerTests(unittest.TestCase):
         self.assertIn("[REDACTED]", combined_logs)
         self.assertEqual(original, event, "logging must not mutate the input event")
 
+    def assert_query_parameter_is_redacted(
+        self, parameter_name: str, parameter_value: str, *, multi_value: bool = False
+    ) -> None:
+        event = make_event()
+        collection = (
+            "multiValueQueryStringParameters" if multi_value else "queryStringParameters"
+        )
+        event[collection] = {
+            parameter_name: [parameter_value] if multi_value else parameter_value,
+            "safe": ["visible"] if multi_value else "visible",
+        }
+        original = copy.deepcopy(event)
+
+        with self.assertLogs(handler.LOGGER, level=logging.INFO) as captured:
+            response = handler.lambda_handler(event, None)
+
+        self.assertEqual(200, response["statusCode"])
+        combined_logs = "\n".join(captured.output)
+        self.assertNotIn(parameter_value, combined_logs)
+        self.assertIn("visible", combined_logs)
+        self.assertIn("[REDACTED]", combined_logs)
+        self.assertEqual(original, event, "logging must not mutate the input event")
+
     def test_get_health_is_read_only_and_returns_version(self) -> None:
         with mock.patch.object(handler, "APP_VERSION", "commit-get-123"):
             response = handler.lambda_handler(make_get_event(), None)
@@ -126,6 +149,29 @@ class HandlerTests(unittest.TestCase):
         event.pop("body", None)
         response = handler.lambda_handler(event, None)
         self.assertEqual(200, response["statusCode"])
+        self.assertEqual([], self.table.calls)
+
+    def test_wrong_route_returns_404_without_persistence(self) -> None:
+        event = make_event()
+        event["path"] = "/admin"
+        event["resource"] = "/admin"
+
+        response = handler.lambda_handler(event, None)
+
+        self.assertEqual(404, response["statusCode"])
+        self.assertEqual(
+            {"status": "error", "message": "Route not found."},
+            json.loads(response["body"]),
+        )
+        self.assertEqual([], self.table.calls)
+
+    def test_non_string_route_is_rejected_without_persistence(self) -> None:
+        event = make_event()
+        event["path"] = 123
+
+        response = handler.lambda_handler(event, None)
+
+        self.assertEqual(404, response["statusCode"])
         self.assertEqual([], self.table.calls)
 
     def test_unsupported_method_returns_405_without_persistence(self) -> None:
@@ -230,6 +276,29 @@ class HandlerTests(unittest.TestCase):
         self.assert_header_is_redacted(
             "pRoXy-AuThOrIzAtIoN", "Basic proxy-value-321", multi_value=True
         )
+
+    def test_token_query_parameter_is_redacted_in_logs(self) -> None:
+        self.assert_query_parameter_is_redacted("token", "query-token-must-not-leak")
+
+    def test_api_key_multi_value_query_parameter_is_redacted_in_logs(self) -> None:
+        self.assert_query_parameter_is_redacted(
+            "API_KEY", "query-api-key-must-not-leak", multi_value=True
+        )
+
+    def test_request_context_api_key_is_redacted_in_logs(self) -> None:
+        event = make_event()
+        api_key = "context-api-key-must-not-leak"
+        event["requestContext"]["identity"]["apiKey"] = api_key
+        original = copy.deepcopy(event)
+
+        with self.assertLogs(handler.LOGGER, level=logging.INFO) as captured:
+            response = handler.lambda_handler(event, None)
+
+        self.assertEqual(200, response["statusCode"])
+        combined_logs = "\n".join(captured.output)
+        self.assertNotIn(api_key, combined_logs)
+        self.assertIn("[REDACTED]", combined_logs)
+        self.assertEqual(original, event, "logging must not mutate the input event")
 
     def test_successful_requests_receive_distinct_uuids(self) -> None:
         handler.lambda_handler(make_event(), None)
