@@ -60,11 +60,17 @@ def audit(plan: dict[str, Any], environment: str) -> list[str]:
         errors.append("critical resources missing from plan: " + ", ".join(missing))
         return errors
 
-    table_after = changes["module.dynamodb.aws_dynamodb_table.requests"]["change"].get("after") or {}
+    table_change = changes["module.dynamodb.aws_dynamodb_table.requests"]["change"]
+    table_after = table_change.get("after") or {}
+    table_after_unknown = table_change.get("after_unknown") or {}
     table_sse = _first_block(table_after, "server_side_encryption")
+    table_sse_unknown = _first_block(table_after_unknown, "server_side_encryption")
     if table_after.get("name") != f"{environment}-requests-db":
         errors.append("DynamoDB table name does not match the environment naming convention")
-    if table_sse.get("enabled") is not True or not table_sse.get("kms_key_arn"):
+    kms_reference_present = bool(table_sse.get("kms_key_arn")) or (
+        table_sse_unknown.get("kms_key_arn") is True
+    )
+    if table_sse.get("enabled") is not True or not kms_reference_present:
         errors.append("DynamoDB must use enabled KMS server-side encryption")
 
     kms_after = changes["module.kms.aws_kms_key.dynamodb"]["change"].get("after") or {}

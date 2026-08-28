@@ -4,12 +4,13 @@ import unittest
 from scripts.check_terraform_plan import audit
 
 
-def resource(address, *, after=None, actions=None):
+def resource(address, *, after=None, after_unknown=None, actions=None):
     return {
         "address": address,
         "change": {
             "actions": actions or ["create"],
             "after": after or {},
+            "after_unknown": after_unknown or {},
         },
     }
 
@@ -61,6 +62,15 @@ def valid_plan():
 class TerraformPlanGuardTests(unittest.TestCase):
     def test_accepts_secure_non_destructive_plan(self):
         self.assertEqual(audit(valid_plan(), "staging"), [])
+
+    def test_accepts_kms_arn_that_is_unknown_until_apply(self):
+        plan = valid_plan()
+        table_change = plan["resource_changes"][0]["change"]
+        table_change["after"]["server_side_encryption"][0]["kms_key_arn"] = None
+        table_change["after_unknown"] = {
+            "server_side_encryption": [{"kms_key_arn": True}]
+        }
+        self.assertEqual(audit(plan, "staging"), [])
 
     def test_rejects_dynamodb_destroy(self):
         plan = valid_plan()

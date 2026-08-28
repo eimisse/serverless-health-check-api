@@ -24,9 +24,10 @@ locals {
     "kms:UpdateKeyDescription",
   ]
 
+  # Keep DescribeKey separate: AWS KMS encryption-context condition keys apply to
+  # cryptographic operations (and CreateGrant), not DescribeKey.
   dynamodb_crypto_actions = [
     "kms:Decrypt",
-    "kms:DescribeKey",
     "kms:Encrypt",
     "kms:GenerateDataKey",
     "kms:GenerateDataKeyWithoutPlaintext",
@@ -46,7 +47,7 @@ resource "aws_kms_key" "dynamodb" {
 
   # KMS key policies require Resource "*" to denote the key to which the policy
   # is attached. Every principal, action, service path, account, and encryption
-  # context is still explicit; see security/iam-wildcard-exceptions.json.
+  # context is still explicit; see security/iam-wildcard-exceptions*.json.
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
@@ -87,6 +88,19 @@ resource "aws_kms_key" "dynamodb" {
           Bool = {
             "kms:GrantIsForAWSResource" = "true"
           }
+          StringEquals = {
+            "kms:CallerAccount" = var.aws_account_id
+            "kms:ViaService"    = "dynamodb.${var.aws_region}.amazonaws.com"
+          }
+        }
+      },
+      {
+        Sid       = "RuntimeRoleDynamoDBDescribeKey"
+        Effect    = "Allow"
+        Principal = { AWS = var.runtime_role_arn }
+        Action    = "kms:DescribeKey"
+        Resource  = "*"
+        Condition = {
           StringEquals = {
             "kms:CallerAccount" = var.aws_account_id
             "kms:ViaService"    = "dynamodb.${var.aws_region}.amazonaws.com"

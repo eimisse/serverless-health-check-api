@@ -1,15 +1,12 @@
-name: Deploy staging
+name: Deploy production
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
 
 permissions: {}
 
 concurrency:
-  group: deploy-staging
+  group: deploy-prod
   cancel-in-progress: false
 
 env:
@@ -21,10 +18,12 @@ env:
 
 jobs:
   deploy:
-    name: Validate, deploy and verify staging
+    name: Validate, approve, deploy and verify prod
     runs-on: ubuntu-latest
-    timeout-minutes: 40
-    environment: staging
+    timeout-minutes: 45
+    # Configure the GitHub `prod` Environment with required reviewers. The job
+    # cannot receive its OIDC token or environment variables until protection passes.
+    environment: prod
     permissions:
       # Checkout and Terraform source inspection require repository read access only.
       contents: read
@@ -43,7 +42,7 @@ jobs:
           set -euo pipefail
           for name in AWS_REGION AWS_DEPLOY_ROLE_ARN TF_STATE_BUCKET TF_STATE_KMS_KEY_ARN; do
             if [ -z "${!name:-}" ]; then
-              echo "Required staging GitHub Environment variable is missing: ${name}" >&2
+              echo "Required prod GitHub Environment variable is missing: ${name}" >&2
               exit 1
             fi
           done
@@ -124,7 +123,7 @@ jobs:
         with:
           role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
-          role-session-name: health-check-staging-${{ github.run_id }}
+          role-session-name: health-check-prod-${{ github.run_id }}
           mask-aws-account-id: true
 
       - name: Verify assumed AWS account
@@ -134,38 +133,38 @@ jobs:
           expected_account="$(printf '%s' "${AWS_DEPLOY_ROLE_ARN}" | cut -d: -f5)"
           actual_account="$(aws sts get-caller-identity --query Account --output text)"
           if [ -z "${expected_account}" ] || [ "${actual_account}" != "${expected_account}" ]; then
-            echo "Assumed AWS account does not match the configured deployment role." >&2
+            echo "Assumed AWS account does not match the configured prod deployment role." >&2
             exit 1
           fi
-          echo "AWS caller identity verified against the staging deployment role."
+          echo "AWS caller identity verified against the prod deployment role."
 
-      - name: Initialize encrypted staging remote state
+      - name: Initialize encrypted prod remote state
         shell: bash
         run: |
           set -euo pipefail
-          cat > /tmp/staging.backend.hcl <<EOF
+          cat > /tmp/prod.backend.hcl <<EOF
           bucket       = "${TF_STATE_BUCKET}"
-          key          = "env/staging/terraform.tfstate"
+          key          = "env/prod/terraform.tfstate"
           region       = "${AWS_REGION}"
           encrypt      = true
           kms_key_id   = "${TF_STATE_KMS_KEY_ARN}"
           use_lockfile = true
           EOF
-          terraform -chdir=terraform init -reconfigure -backend-config=/tmp/staging.backend.hcl
+          terraform -chdir=terraform init -reconfigure -backend-config=/tmp/prod.backend.hcl
 
-      - name: Create saved staging plan
+      - name: Create saved prod plan
         run: |
           terraform -chdir=terraform plan \
             -input=false \
-            -var-file=environments/staging.tfvars \
+            -var-file=environments/prod.tfvars \
             -var="application_version=${GITHUB_SHA}" \
             -out=tfplan
           terraform -chdir=terraform show -json tfplan > terraform/tfplan.json
 
       - name: Guard saved Terraform plan
-        run: python scripts/check_terraform_plan.py terraform/tfplan.json --environment staging
+        run: python scripts/check_terraform_plan.py terraform/tfplan.json --environment prod
 
-      - name: Apply exact reviewed staging plan
+      - name: Apply exact approved prod plan
         run: terraform -chdir=terraform apply -input=false tfplan
 
       - name: Export non-secret Terraform outputs and mask API key
@@ -184,13 +183,13 @@ jobs:
           api_key="$(aws apigateway get-api-key --api-key "${api_key_id}" --include-value --query value --output text)"
 
           if [ -z "${api_key}" ] || [ "${api_key}" = "None" ]; then
-            echo "API Gateway did not return the generated API key value." >&2
+            echo "API Gateway did not return the generated prod API key value." >&2
             exit 1
           fi
           echo "::add-mask::${api_key}"
 
           {
-            echo "ENVIRONMENT=staging"
+            echo "ENVIRONMENT=prod"
             echo "API_URL=${api_url}"
             echo "API_KEY=${api_key}"
             echo "LAMBDA_FUNCTION_NAME=${lambda_name}"
@@ -203,8 +202,8 @@ jobs:
             echo "APPLICATION_VERSION=${GITHUB_SHA}"
           } >> "${GITHUB_ENV}"
 
-      - name: Verify live staging functionality and security controls
-        run: python scripts/verify_deployment.py
+      - name: Verify live prod functionality and security controls
+        run: python scripts/verify_prod_deployment.py
 
       - name: Verify zero Terraform drift after deployment
         shell: bash
@@ -213,18 +212,18 @@ jobs:
           terraform -chdir=terraform plan \
             -input=false \
             -detailed-exitcode \
-            -var-file=environments/staging.tfvars \
+            -var-file=environments/prod.tfvars \
             -var="application_version=${GITHUB_SHA}" \
             -out=post-deploy.tfplan
           exit_code=$?
           set -e
 
           if [ "${exit_code}" -eq 0 ]; then
-            echo "Post-deployment Terraform drift check passed."
+            echo "Post-deployment prod Terraform drift check passed."
             exit 0
           fi
           if [ "${exit_code}" -eq 2 ]; then
-            echo "Post-deployment Terraform drift detected." >&2
+            echo "Post-deployment prod Terraform drift detected." >&2
             terraform -chdir=terraform show -no-color post-deploy.tfplan >&2
           fi
           exit "${exit_code}"

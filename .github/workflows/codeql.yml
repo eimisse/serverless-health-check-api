@@ -24,7 +24,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
+      # CodeQL must read the checked-out repository source.
       contents: read
+      # CodeQL uploads SARIF/code-scanning results to this repository.
       security-events: write
 
     steps:

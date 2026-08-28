@@ -160,7 +160,6 @@ run "kms_rotation_and_scope" {
     condition = alltrue([
       for required_action in [
         "kms:Decrypt",
-        "kms:DescribeKey",
         "kms:Encrypt",
         "kms:GenerateDataKey",
         "kms:GenerateDataKeyWithoutPlaintext",
@@ -175,6 +174,31 @@ run "kms_rotation_and_scope" {
       )
     ])
     error_message = "Runtime DynamoDB KMS use must include only the cryptographic operations DynamoDB needs on the caller's behalf."
+  }
+
+  assert {
+    condition = !contains(
+      one([
+        for statement in jsondecode(aws_kms_key.dynamodb.policy).Statement : statement.Action
+        if statement.Sid == "RuntimeRoleDynamoDBCryptoUse"
+      ]),
+      "kms:DescribeKey",
+    )
+    error_message = "DescribeKey must not share the encryption-context constrained cryptographic statement."
+  }
+
+  assert {
+    condition = (
+      one([
+        for statement in jsondecode(aws_kms_key.dynamodb.policy).Statement : statement.Action
+        if statement.Sid == "RuntimeRoleDynamoDBDescribeKey"
+      ]) == "kms:DescribeKey" &&
+      one([
+        for statement in jsondecode(aws_kms_key.dynamodb.policy).Statement : statement.Condition.StringEquals["kms:ViaService"]
+        if statement.Sid == "RuntimeRoleDynamoDBDescribeKey"
+      ]) == "dynamodb.eu-west-1.amazonaws.com"
+    )
+    error_message = "DescribeKey must be isolated in a DynamoDB ViaService-constrained statement."
   }
 
   assert {

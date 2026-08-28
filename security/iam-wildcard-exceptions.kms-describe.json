@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "scope": "KMS DescribeKey exception separated from encryption-context constrained cryptographic actions.",
+  "exceptions": [
+    {
+      "id": "KMS-RUNTIME-DYNAMODB-DESCRIBE",
+      "path": "terraform/modules/kms/main.tf",
+      "sid": "RuntimeRoleDynamoDBDescribeKey",
+      "literal": "*",
+      "expected_count": 1,
+      "kind": "kms-key-policy-resource",
+      "reason": "KMS key policies use Resource star for the attached key. DescribeKey cannot use encryption-context conditions, so the exact runtime role is instead constrained by CallerAccount and ViaService to DynamoDB in the configured account and Region."
+    }
+  ]
+}
