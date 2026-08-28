@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "scope": "Runtime-policy exceptions discovered during CI hardening.",
+  "exceptions": [
+    {
+      "id": "RUNTIME-LAMBDA-LOG-STREAM-ARN",
+      "path": "terraform/modules/runtime_iam/main.tf",
+      "sid": "WriteOnlyApplicationLogs",
+      "literal": "${local.log_group_arn}:*",
+      "expected_count": 1,
+      "kind": "resource-arn-suffix",
+      "reason": "CloudWatch log stream names are generated at runtime, so PutLogEvents and CreateLogStream must target all streams beneath only the exact environment-prefixed Lambda log group."
+    }
+  ]
+}

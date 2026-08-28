@@ -43,6 +43,49 @@ def _strip_line_comment(line: str) -> str:
     return line
 
 
+def _strip_block_comments(line: str, in_block_comment: bool) -> tuple[str, bool]:
+    """Remove HCL block comments while preserving slash-star sequences inside strings."""
+    cleaned: list[str] = []
+    index = 0
+    in_string = False
+    escaped = False
+
+    while index < len(line):
+        if in_block_comment:
+            end = line.find("*/", index)
+            if end == -1:
+                return "".join(cleaned), True
+            in_block_comment = False
+            index = end + 2
+            continue
+
+        char = line[index]
+        if escaped:
+            cleaned.append(char)
+            escaped = False
+            index += 1
+            continue
+        if char == "\\" and in_string:
+            cleaned.append(char)
+            escaped = True
+            index += 1
+            continue
+        if char == '"':
+            in_string = not in_string
+            cleaned.append(char)
+            index += 1
+            continue
+        if not in_string and line.startswith("/*", index):
+            in_block_comment = True
+            index += 2
+            continue
+
+        cleaned.append(char)
+        index += 1
+
+    return "".join(cleaned), in_block_comment
+
+
 def _decode_hcl_string(value: str) -> str:
     """Decode the simple escapes used in the Terraform sources we inspect."""
     return value.replace(r'\"', '"').replace(r"\\", "\\")
@@ -52,7 +95,8 @@ def _nearest_sid(lines: list[str], line_number: int) -> str | None:
     """Return the closest statement Sid/sid preceding a wildcard occurrence."""
     lower_bound = max(0, line_number - 100)
     for index in range(line_number - 1, lower_bound - 1, -1):
-        match = SID_RE.search(_strip_line_comment(lines[index]))
+        line, _ = _strip_block_comments(lines[index], False)
+        match = SID_RE.search(_strip_line_comment(line))
         if match:
             return match.group(1)
     return None
@@ -85,32 +129,43 @@ def _source_files(root: Path) -> Iterable[Path]:
             yield path
 
 
-def _load_catalog(path: Path) -> list[dict[str, object]]:
-    data = json.loads(path.read_text(encoding="utf-8"))
-    entries = data.get("exceptions")
-    if not isinstance(entries, list):
-        raise ValueError("catalog must contain an 'exceptions' list")
+def _catalog_paths(primary: Path) -> list[Path]:
+    """Return the primary exception catalogue and optional narrowly scoped supplements."""
+    supplements = sorted(primary.parent.glob(f"{primary.stem}.*{primary.suffix}"))
+    return [primary, *[path for path in supplements if path != primary]]
 
+
+def _load_catalog(path: Path) -> list[dict[str, object]]:
     seen_ids: set[str] = set()
     normalized: list[dict[str, object]] = []
-    for raw in entries:
-        if not isinstance(raw, dict):
-            raise ValueError("each exception must be an object")
-        required = {"id", "path", "sid", "literal", "expected_count", "reason"}
-        missing = required - raw.keys()
-        if missing:
-            raise ValueError(f"exception is missing fields: {sorted(missing)}")
-        exception_id = raw["id"]
-        if not isinstance(exception_id, str) or not exception_id:
-            raise ValueError("exception id must be a non-empty string")
-        if exception_id in seen_ids:
-            raise ValueError(f"duplicate exception id: {exception_id}")
-        seen_ids.add(exception_id)
-        if not isinstance(raw["expected_count"], int) or raw["expected_count"] < 1:
-            raise ValueError(f"{exception_id}: expected_count must be a positive integer")
-        if not isinstance(raw["reason"], str) or len(raw["reason"].strip()) < 20:
-            raise ValueError(f"{exception_id}: reason must be explicit")
-        normalized.append(raw)
+
+    for catalog_path in _catalog_paths(path):
+        data = json.loads(catalog_path.read_text(encoding="utf-8"))
+        entries = data.get("exceptions")
+        if not isinstance(entries, list):
+            raise ValueError(f"{catalog_path}: catalog must contain an 'exceptions' list")
+
+        for raw in entries:
+            if not isinstance(raw, dict):
+                raise ValueError(f"{catalog_path}: each exception must be an object")
+            required = {"id", "path", "sid", "literal", "expected_count", "reason"}
+            missing = required - raw.keys()
+            if missing:
+                raise ValueError(
+                    f"{catalog_path}: exception is missing fields: {sorted(missing)}"
+                )
+            exception_id = raw["id"]
+            if not isinstance(exception_id, str) or not exception_id:
+                raise ValueError(f"{catalog_path}: exception id must be a non-empty string")
+            if exception_id in seen_ids:
+                raise ValueError(f"duplicate exception id: {exception_id}")
+            seen_ids.add(exception_id)
+            if not isinstance(raw["expected_count"], int) or raw["expected_count"] < 1:
+                raise ValueError(f"{exception_id}: expected_count must be a positive integer")
+            if not isinstance(raw["reason"], str) or len(raw["reason"].strip()) < 20:
+                raise ValueError(f"{exception_id}: reason must be explicit")
+            normalized.append(raw)
+
     return normalized
 
 
@@ -128,22 +183,7 @@ def audit(root: Path, catalog_path: Path) -> list[str]:
         lines = path.read_text(encoding="utf-8").splitlines()
         in_block_comment = False
         for line_index, raw_line in enumerate(lines, start=1):
-            line = raw_line
-            if in_block_comment:
-                if "*/" in line:
-                    line = line.split("*/", 1)[1]
-                    in_block_comment = False
-                else:
-                    continue
-            while "/*" in line:
-                before, after = line.split("/*", 1)
-                if "*/" in after:
-                    line = before + after.split("*/", 1)[1]
-                else:
-                    line = before
-                    in_block_comment = True
-                    break
-
+            line, in_block_comment = _strip_block_comments(raw_line, in_block_comment)
             code = _strip_line_comment(line)
             for match in STRING_RE.finditer(code):
                 literal = _decode_hcl_string(match.group(1))

@@ -19,9 +19,9 @@ data "aws_iam_policy_document" "deployment" {
   }
 
   statement {
-    sid     = "ListOwnStatePrefix"
-    effect  = "Allow"
-    actions = ["s3:ListBucket"]
+    sid       = "ListOwnStatePrefix"
+    effect    = "Allow"
+    actions   = ["s3:ListBucket"]
     resources = [local.state_bucket_arn]
 
     condition {

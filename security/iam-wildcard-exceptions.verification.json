@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "scope": "Read-only deployment verification exceptions.",
+  "exceptions": [
+    {
+      "id": "DEPLOY-VERIFY-LAMBDA-LOG-GROUP-ARN",
+      "path": "bootstrap/deployment_verification.tf",
+      "sid": "VerifyLambdaApplicationLogs",
+      "literal": "${local.resource_arns[each.key].lambda_log_group}:*",
+      "expected_count": 1,
+      "kind": "resource-arn-suffix",
+      "reason": "CloudWatch Logs FilterLogEvents uses the log-group IAM ARN form ending in :*; the ARN remains constrained to the exact environment Lambda log group."
+    },
+    {
+      "id": "DEPLOY-VERIFY-NETWORK-DESCRIBE",
+      "path": "bootstrap/deployment_verification.tf",
+      "sid": "VerifyNetworkIsolationReadOnly",
+      "literal": "*",
+      "expected_count": 1,
+      "kind": "resource",
+      "reason": "EC2 DescribeInternetGateways and DescribeNatGateways do not support resource-level authorization; the statement is read-only and constrained by aws:RequestedRegion."
+    }
+  ]
+}

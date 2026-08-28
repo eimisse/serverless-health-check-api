@@ -166,7 +166,7 @@ run "kms_rotation_and_scope" {
         "kms:GenerateDataKeyWithoutPlaintext",
         "kms:ReEncryptFrom",
         "kms:ReEncryptTo",
-      ] : contains(
+        ] : contains(
         one([
           for statement in jsondecode(aws_kms_key.dynamodb.policy).Statement : statement.Action
           if statement.Sid == "RuntimeRoleDynamoDBCryptoUse"
