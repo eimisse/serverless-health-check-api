@@ -20,7 +20,18 @@ locals {
     "kms:ScheduleKeyDeletion",
     "kms:TagResource",
     "kms:UntagResource",
+    "kms:UpdateAlias",
     "kms:UpdateKeyDescription",
+  ]
+
+  dynamodb_crypto_actions = [
+    "kms:Decrypt",
+    "kms:DescribeKey",
+    "kms:Encrypt",
+    "kms:GenerateDataKey",
+    "kms:GenerateDataKeyWithoutPlaintext",
+    "kms:ReEncryptFrom",
+    "kms:ReEncryptTo",
   ]
 }
 
@@ -57,14 +68,8 @@ resource "aws_kms_key" "dynamodb" {
         Sid       = "DeploymentRoleDynamoDBKeyUse"
         Effect    = "Allow"
         Principal = { AWS = var.deployment_role_arn }
-        Action = [
-          "kms:Decrypt",
-          "kms:DescribeKey",
-          "kms:GenerateDataKey",
-          "kms:ReEncryptFrom",
-          "kms:ReEncryptTo",
-        ]
-        Resource = "*"
+        Action    = local.dynamodb_crypto_actions
+        Resource  = "*"
         Condition = {
           StringEquals = {
             "kms:CallerAccount" = var.aws_account_id
@@ -89,10 +94,10 @@ resource "aws_kms_key" "dynamodb" {
         }
       },
       {
-        Sid       = "RuntimeRoleDynamoDBDecryptOnly"
+        Sid       = "RuntimeRoleDynamoDBCryptoUse"
         Effect    = "Allow"
         Principal = { AWS = var.runtime_role_arn }
-        Action    = "kms:Decrypt"
+        Action    = local.dynamodb_crypto_actions
         Resource  = "*"
         Condition = {
           StringEquals = {
@@ -100,6 +105,22 @@ resource "aws_kms_key" "dynamodb" {
             "kms:ViaService"                                  = "dynamodb.${var.aws_region}.amazonaws.com"
             "kms:EncryptionContext:aws:dynamodb:subscriberId" = var.aws_account_id
             "kms:EncryptionContext:aws:dynamodb:tableName"    = var.table_name
+          }
+        }
+      },
+      {
+        Sid       = "RuntimeRoleDynamoDBGrant"
+        Effect    = "Allow"
+        Principal = { AWS = var.runtime_role_arn }
+        Action    = "kms:CreateGrant"
+        Resource  = "*"
+        Condition = {
+          Bool = {
+            "kms:GrantIsForAWSResource" = "true"
+          }
+          StringEquals = {
+            "kms:CallerAccount" = var.aws_account_id
+            "kms:ViaService"    = "dynamodb.${var.aws_region}.amazonaws.com"
           }
         }
       },

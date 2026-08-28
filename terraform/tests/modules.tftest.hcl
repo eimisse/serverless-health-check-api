@@ -132,6 +132,15 @@ run "kms_rotation_and_scope" {
   }
 
   assert {
+    condition = alltrue([
+      for statement in jsondecode(aws_kms_key.dynamodb.policy).Statement :
+      contains(statement.Action, "kms:UpdateAlias")
+      if contains(["AccountRootBreakGlassAdministration", "DeploymentRoleKeyAdministration"], statement.Sid)
+    ])
+    error_message = "Both break-glass and deployment administrators need key-side UpdateAlias permission for safe key replacement."
+  }
+
+  assert {
     condition = one([
       for statement in jsondecode(aws_kms_key.dynamodb.policy).Statement : statement.Principal.AWS
       if statement.Sid == "AccountRootBreakGlassAdministration"
@@ -142,9 +151,44 @@ run "kms_rotation_and_scope" {
   assert {
     condition = one([
       for statement in jsondecode(aws_kms_key.dynamodb.policy).Statement : statement.Principal.AWS
-      if statement.Sid == "RuntimeRoleDynamoDBDecryptOnly"
+      if statement.Sid == "RuntimeRoleDynamoDBCryptoUse"
     ]) == "arn:aws:iam::123456789012:role/staging-health-check-function-role"
-    error_message = "Runtime KMS decrypt must be granted directly to the exact Lambda role."
+    error_message = "Runtime DynamoDB KMS use must be granted directly to the exact Lambda role."
+  }
+
+  assert {
+    condition = alltrue([
+      for required_action in [
+        "kms:Decrypt",
+        "kms:DescribeKey",
+        "kms:Encrypt",
+        "kms:GenerateDataKey",
+        "kms:GenerateDataKeyWithoutPlaintext",
+        "kms:ReEncryptFrom",
+        "kms:ReEncryptTo",
+      ] : contains(
+        one([
+          for statement in jsondecode(aws_kms_key.dynamodb.policy).Statement : statement.Action
+          if statement.Sid == "RuntimeRoleDynamoDBCryptoUse"
+        ]),
+        required_action,
+      )
+    ])
+    error_message = "Runtime DynamoDB KMS use must include only the cryptographic operations DynamoDB needs on the caller's behalf."
+  }
+
+  assert {
+    condition = (
+      one([
+        for statement in jsondecode(aws_kms_key.dynamodb.policy).Statement : statement.Condition.StringEquals["kms:ViaService"]
+        if statement.Sid == "RuntimeRoleDynamoDBCryptoUse"
+      ]) == "dynamodb.eu-west-1.amazonaws.com" &&
+      one([
+        for statement in jsondecode(aws_kms_key.dynamodb.policy).Statement : statement.Condition.StringEquals["kms:EncryptionContext:aws:dynamodb:tableName"]
+        if statement.Sid == "RuntimeRoleDynamoDBCryptoUse"
+      ]) == "staging-requests-db"
+    )
+    error_message = "Runtime KMS use must be constrained to DynamoDB and the exact table encryption context."
   }
 }
 
@@ -234,7 +278,7 @@ run "runtime_role_is_least_privilege" {
       !strcontains(aws_iam_role_policy.runtime.policy, "iam:") &&
       !strcontains(aws_iam_role_policy.runtime.policy, "s3:")
     )
-    error_message = "The runtime policy must contain only persistence, logging, and exact VPC lifecycle permissions."
+    error_message = "The runtime IAM identity policy must contain only persistence, logging, and exact VPC lifecycle permissions; KMS authorization is constrained in the key policy."
   }
 }
 
@@ -284,7 +328,6 @@ run "lambda_has_bounded_private_runtime" {
     )
     error_message = "Lambda must have finite log retention and track the deterministic package hash."
   }
-
 }
 
 run "rest_api_validates_and_throttles" {

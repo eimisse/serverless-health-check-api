@@ -1,0 +1,211 @@
+#!/usr/bin/env python3
+"""Fail CI when Terraform IAM policies introduce unreviewed wildcard permissions."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import sys
+from collections import Counter
+from pathlib import Path
+from typing import Iterable
+
+STRING_RE = re.compile(r'"((?:\\.|[^"\\])*)"')
+SID_RE = re.compile(r'\b(?:sid|Sid)\s*=\s*"([A-Za-z0-9_-]+)"')
+ACTION_WILDCARD_RE = re.compile(r"^[a-z0-9-]+:\*$", re.IGNORECASE)
+
+
+def _strip_line_comment(line: str) -> str:
+    """Remove HCL line comments without treating comment markers inside strings as comments."""
+    in_string = False
+    escaped = False
+    index = 0
+    while index < len(line):
+        char = line[index]
+        if escaped:
+            escaped = False
+            index += 1
+            continue
+        if char == "\\" and in_string:
+            escaped = True
+            index += 1
+            continue
+        if char == '"':
+            in_string = not in_string
+            index += 1
+            continue
+        if not in_string and char == "#":
+            return line[:index]
+        if not in_string and char == "/" and index + 1 < len(line) and line[index + 1] == "/":
+            return line[:index]
+        index += 1
+    return line
+
+
+def _decode_hcl_string(value: str) -> str:
+    """Decode the simple escapes used in the Terraform sources we inspect."""
+    return value.replace(r'\"', '"').replace(r"\\", "\\")
+
+
+def _nearest_sid(lines: list[str], line_number: int) -> str | None:
+    """Return the closest statement Sid/sid preceding a wildcard occurrence."""
+    lower_bound = max(0, line_number - 100)
+    for index in range(line_number - 1, lower_bound - 1, -1):
+        match = SID_RE.search(_strip_line_comment(lines[index]))
+        if match:
+            return match.group(1)
+    return None
+
+
+def _is_suspicious_wildcard(literal: str) -> bool:
+    if "*" not in literal:
+        return False
+    if literal == "*":
+        return True
+    if ACTION_WILDCARD_RE.fullmatch(literal):
+        return True
+    return (
+        literal.startswith("arn:")
+        or literal.startswith("${")
+        or "/*" in literal
+        or literal.endswith(":*")
+    )
+
+
+def _source_files(root: Path) -> Iterable[Path]:
+    for base in (root / "bootstrap", root / "terraform"):
+        if not base.exists():
+            continue
+        for path in sorted(base.rglob("*.tf")):
+            if "tests" in path.parts:
+                continue
+            if ".terraform" in path.parts:
+                continue
+            yield path
+
+
+def _load_catalog(path: Path) -> list[dict[str, object]]:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    entries = data.get("exceptions")
+    if not isinstance(entries, list):
+        raise ValueError("catalog must contain an 'exceptions' list")
+
+    seen_ids: set[str] = set()
+    normalized: list[dict[str, object]] = []
+    for raw in entries:
+        if not isinstance(raw, dict):
+            raise ValueError("each exception must be an object")
+        required = {"id", "path", "sid", "literal", "expected_count", "reason"}
+        missing = required - raw.keys()
+        if missing:
+            raise ValueError(f"exception is missing fields: {sorted(missing)}")
+        exception_id = raw["id"]
+        if not isinstance(exception_id, str) or not exception_id:
+            raise ValueError("exception id must be a non-empty string")
+        if exception_id in seen_ids:
+            raise ValueError(f"duplicate exception id: {exception_id}")
+        seen_ids.add(exception_id)
+        if not isinstance(raw["expected_count"], int) or raw["expected_count"] < 1:
+            raise ValueError(f"{exception_id}: expected_count must be a positive integer")
+        if not isinstance(raw["reason"], str) or len(raw["reason"].strip()) < 20:
+            raise ValueError(f"{exception_id}: reason must be explicit")
+        normalized.append(raw)
+    return normalized
+
+
+def audit(root: Path, catalog_path: Path) -> list[str]:
+    exceptions = _load_catalog(catalog_path)
+    allowed = {
+        (str(entry["path"]), entry["sid"], str(entry["literal"])): int(entry["expected_count"])
+        for entry in exceptions
+    }
+    observed: Counter[tuple[str, str | None, str]] = Counter()
+    errors: list[str] = []
+
+    for path in _source_files(root):
+        rel_path = path.relative_to(root).as_posix()
+        lines = path.read_text(encoding="utf-8").splitlines()
+        in_block_comment = False
+        for line_index, raw_line in enumerate(lines, start=1):
+            line = raw_line
+            if in_block_comment:
+                if "*/" in line:
+                    line = line.split("*/", 1)[1]
+                    in_block_comment = False
+                else:
+                    continue
+            while "/*" in line:
+                before, after = line.split("/*", 1)
+                if "*/" in after:
+                    line = before + after.split("*/", 1)[1]
+                else:
+                    line = before
+                    in_block_comment = True
+                    break
+
+            code = _strip_line_comment(line)
+            for match in STRING_RE.finditer(code):
+                literal = _decode_hcl_string(match.group(1))
+                if not _is_suspicious_wildcard(literal):
+                    continue
+
+                sid = _nearest_sid(lines, line_index)
+                key = (rel_path, sid, literal)
+                observed[key] += 1
+
+                if ACTION_WILDCARD_RE.fullmatch(literal):
+                    errors.append(
+                        f"{rel_path}:{line_index}: wildcard IAM action '{literal}' is prohibited"
+                    )
+                    continue
+
+                max_count = allowed.get(key, 0)
+                if observed[key] > max_count:
+                    errors.append(
+                        f"{rel_path}:{line_index}: unreviewed wildcard '{literal}' "
+                        f"(sid={sid!r})"
+                    )
+
+    for key, expected in sorted(allowed.items(), key=lambda item: repr(item[0])):
+        actual = observed.get(key, 0)
+        if actual != expected:
+            path, sid, literal = key
+            errors.append(
+                f"catalog mismatch for {path} sid={sid!r} literal={literal!r}: "
+                f"expected {expected}, observed {actual}"
+            )
+
+    return errors
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--root", type=Path, default=Path.cwd())
+    parser.add_argument(
+        "--catalog",
+        type=Path,
+        default=Path("security/iam-wildcard-exceptions.json"),
+    )
+    args = parser.parse_args()
+
+    root = args.root.resolve()
+    catalog = args.catalog if args.catalog.is_absolute() else root / args.catalog
+    try:
+        errors = audit(root, catalog)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        print(f"IAM wildcard audit configuration error: {exc}", file=sys.stderr)
+        return 2
+
+    if errors:
+        print("IAM wildcard audit FAILED:", file=sys.stderr)
+        for error in errors:
+            print(f"- {error}", file=sys.stderr)
+        return 1
+
+    print("IAM wildcard audit passed: all wildcard permissions are reviewed and catalogued.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
