@@ -1,8 +1,9 @@
 locals {
-  function_name = "${var.environment}-health-check-function"
-  role_name     = "${var.environment}-health-check-function-role"
-  function_arn  = "arn:${var.aws_partition}:lambda:${var.aws_region}:${var.aws_account_id}:function:${local.function_name}"
-  log_group_arn = "arn:${var.aws_partition}:logs:${var.aws_region}:${var.aws_account_id}:log-group:/aws/lambda/${local.function_name}"
+  function_name  = "${var.environment}-health-check-function"
+  role_name      = "${var.environment}-health-check-function-role"
+  log_group_name = "${var.environment}-health-check-function-logs"
+  function_arn   = "arn:${var.aws_partition}:lambda:${var.aws_region}:${var.aws_account_id}:function:${local.function_name}"
+  log_group_arn  = "arn:${var.aws_partition}:logs:${var.aws_region}:${var.aws_account_id}:log-group:${local.log_group_name}"
 
   vpc_eni_actions = [
     "ec2:AssignPrivateIpAddresses",

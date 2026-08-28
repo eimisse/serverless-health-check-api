@@ -91,7 +91,8 @@ module "api_gateway" {
   aws_partition              = data.aws_partition.current.partition
   aws_account_id             = data.aws_caller_identity.current.account_id
   lambda_function_name       = module.lambda.function_name
-  lambda_invoke_arn          = module.lambda.invoke_arn
+  lambda_qualifier           = module.lambda.release_alias_name
+  lambda_invoke_arn          = module.lambda.release_alias_invoke_arn
   max_payload_length         = var.max_payload_length
   log_retention_days         = var.log_retention_days
   stage_throttle_rate_limit  = var.stage_throttle_rate_limit
@@ -120,5 +121,15 @@ check "usage_plan_is_not_weaker_than_stage" {
       var.usage_plan_burst_limit <= var.stage_throttle_burst_limit
     )
     error_message = "The per-key usage plan must be at least as restrictive as the stage throttle."
+  }
+}
+
+check "availability_zones_match_region" {
+  assert {
+    condition = alltrue([
+      for availability_zone in var.availability_zones :
+      startswith(availability_zone, var.aws_region)
+    ])
+    error_message = "Every configured Availability Zone must belong to aws_region."
   }
 }

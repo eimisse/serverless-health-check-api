@@ -30,7 +30,7 @@ variable "vpc_cidr" {
 }
 
 variable "private_subnet_cidrs" {
-  description = "Exactly two non-overlapping private subnet CIDRs."
+  description = "Exactly two distinct private subnet CIDRs. The reviewed environment tfvars keep both ranges inside the VPC and non-overlapping."
   type        = list(string)
 
   validation {

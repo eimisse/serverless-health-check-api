@@ -21,15 +21,15 @@ env:
 
 jobs:
   deploy:
+    # workflow_dispatch can target another ref; only reviewed main may obtain AWS credentials.
+    if: github.ref == 'refs/heads/main'
     name: Validate, deploy and verify staging
     runs-on: ubuntu-latest
     timeout-minutes: 40
     environment: staging
     permissions:
-      # Checkout and Terraform source inspection require repository read access only.
       contents: read
-      # GitHub OIDC needs permission to mint the short-lived token exchanged with AWS STS.
-      id-token: write
+      id-token: write # GitHub OIDC mints the short-lived token exchanged with AWS STS.
 
     steps:
       - name: Checkout
@@ -94,6 +94,7 @@ jobs:
       - name: Run Python security and dependency scans
         run: |
           bandit -r lambda scripts -x lambda/tests -ll -ii
+          pip-audit -r lambda/requirements.txt
           pip-audit -r lambda/requirements-dev.txt
 
       - name: Checkov application IaC gate
@@ -205,6 +206,9 @@ jobs:
 
       - name: Verify live staging functionality and security controls
         run: python scripts/verify_deployment.py
+
+      - name: Prove Content-Type cannot bypass API Gateway validation
+        run: python scripts/verify_gateway_boundary.py
 
       - name: Verify zero Terraform drift after deployment
         shell: bash

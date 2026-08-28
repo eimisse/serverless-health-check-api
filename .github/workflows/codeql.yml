@@ -3,7 +3,6 @@ name: CodeQL
 on:
   push:
     branches:
-      - submission
       - main
   pull_request:
     branches:
@@ -24,10 +23,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
-      # CodeQL must read the checked-out repository source.
       contents: read
-      # CodeQL uploads SARIF/code-scanning results to this repository.
-      security-events: write
+      security-events: write # CodeQL uploads SARIF/code-scanning results to this repository.
 
     steps:
       - name: Checkout

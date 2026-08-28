@@ -19,17 +19,22 @@ variable "aws_account_id" {
 }
 
 variable "lambda_function_name" {
-  description = "Lambda function invoked by POST /health."
+  description = "Lambda function invoked by GET and POST /health."
+  type        = string
+}
+
+variable "lambda_qualifier" {
+  description = "Environment-scoped Lambda alias qualifier invoked by API Gateway."
   type        = string
 }
 
 variable "lambda_invoke_arn" {
-  description = "Lambda invoke ARN used by the AWS_PROXY integration."
+  description = "Alias-qualified Lambda invoke ARN used by both AWS_PROXY integrations."
   type        = string
 }
 
 variable "max_payload_length" {
-  description = "Maximum payload string length enforced before Lambda invocation."
+  description = "Maximum POST payload string length enforced before Lambda invocation."
   type        = number
 }
 
@@ -39,12 +44,12 @@ variable "log_retention_days" {
 }
 
 variable "stage_throttle_rate_limit" {
-  description = "Stage steady-state rate limit for POST /health."
+  description = "Stage steady-state rate limit for GET and POST /health."
   type        = number
 }
 
 variable "stage_throttle_burst_limit" {
-  description = "Stage burst limit for POST /health."
+  description = "Stage burst limit for GET and POST /health."
   type        = number
 }
 

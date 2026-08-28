@@ -1,16 +1,18 @@
 locals {
-  function_name = "${var.environment}-health-check-function"
+  function_name      = "${var.environment}-health-check-function"
+  log_group_name     = "${var.environment}-health-check-function-logs"
+  release_alias_name = "${var.environment}-release"
 }
 
 #trivy:ignore:AVD-AWS-0017
 resource "aws_cloudwatch_log_group" "lambda" {
-  #checkov:skip=CKV_AWS_158:Application logs are redacted and contain no secrets; AWS-managed CloudWatch encryption avoids an additional CMK policy surface.
-  name              = "/aws/lambda/${local.function_name}"
+  #checkov:skip=CKV_AWS_158:Application logs are redacted and contain no secrets; AWS-managed CloudWatch encryption avoids an additional CMK and policy surface.
+  name              = local.log_group_name
   retention_in_days = var.log_retention_days
   skip_destroy      = false
 
   tags = merge(var.tags, {
-    Name = "${var.environment}-health-check-function-logs"
+    Name = local.log_group_name
   })
 }
 
@@ -71,4 +73,11 @@ resource "aws_lambda_function" "health" {
   depends_on = [
     aws_cloudwatch_log_group.lambda,
   ]
+}
+
+resource "aws_lambda_alias" "release" {
+  name             = local.release_alias_name
+  description      = "Current immutable ${var.environment} release; source ${var.application_version}"
+  function_name    = aws_lambda_function.health.function_name
+  function_version = aws_lambda_function.health.version
 }

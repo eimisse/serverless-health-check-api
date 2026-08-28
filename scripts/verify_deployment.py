@@ -106,14 +106,16 @@ def aws_json(config: Config, *arguments: str) -> dict[str, Any]:
 def http_request(
     config: Config,
     *,
-    body: bytes,
+    method: str = "POST",
+    body: bytes | None = None,
     api_key: str | None,
     extra_headers: dict[str, str] | None = None,
 ) -> tuple[int, dict[str, str], bytes]:
     headers = {
-        "Content-Type": "application/json",
         "User-Agent": "candidate-homework-integration-test/1.0",
     }
+    if body is not None:
+        headers["Content-Type"] = "application/json"
     if api_key is not None:
         headers["x-api-key"] = api_key
     if extra_headers:
@@ -123,7 +125,7 @@ def http_request(
         f"{config.api_url}/health",
         data=body,
         headers=headers,
-        method="POST",
+        method=method,
     )
     try:
         with urllib.request.urlopen(request, timeout=15) as response:  # nosec B310 - URL is the Terraform output under test.
@@ -188,7 +190,7 @@ def filter_lambda_logs(
         "logs",
         "filter-log-events",
         "--log-group-name",
-        f"/aws/lambda/{config.lambda_function_name}",
+        f"{config.environment}-health-check-function-logs",
         "--start-time",
         str(start_time_ms),
         "--filter-pattern",
@@ -218,6 +220,31 @@ def wait_for_log_marker(
             return messages
         time.sleep(2)
     raise VerificationError(f"Lambda log marker did not appear: {marker}")
+
+
+def verify_get_health(config: Config) -> None:
+    status, _, body = http_request(config, method="GET", api_key=config.api_key)
+    check(status == 200, "valid GET /health returns HTTP 200")
+    response_body = parsed_body(body)
+    check(response_body.get("status") == "healthy", "GET /health reports healthy status")
+    check(
+        response_body.get("message") == "Service is available.",
+        "GET /health returns the expected liveness message",
+    )
+    check(
+        response_body.get("version") == config.application_version,
+        "GET /health exposes the immutable deployed commit version",
+    )
+
+    status, _, _ = http_request(config, method="GET", api_key=None)
+    check(status == 403, "GET /health without API key is rejected with HTTP 403")
+
+    status, _, _ = http_request(
+        config,
+        method="GET",
+        api_key="not-a-valid-key",
+    )
+    check(status == 403, "GET /health with wrong API key is rejected with HTTP 403")
 
 
 def verify_user_path(config: Config) -> tuple[str, int]:
@@ -284,10 +311,10 @@ def verify_negative_requests(config: Config) -> None:
         check(status == expected, f"API Gateway rejects {label} with HTTP {expected}")
 
     status, _, _ = json_request(config, {"payload": "no-key"}, api_key=None)
-    check(status == 403, "request without API key is rejected with HTTP 403")
+    check(status == 403, "POST /health without API key is rejected with HTTP 403")
 
     status, _, _ = json_request(config, {"payload": "wrong-key"}, api_key="not-a-valid-key")
-    check(status == 403, "request with wrong API key is rejected with HTTP 403")
+    check(status == 403, "POST /health with wrong API key is rejected with HTTP 403")
 
 
 def verify_gateway_rejects_before_lambda(config: Config) -> None:
@@ -448,6 +475,7 @@ def main() -> int:
         config = Config.from_environment()
         check(config.environment == "staging", "runtime verification is intentionally limited to staging")
         check(len(config.private_subnet_ids) == 2, "verification received exactly two private subnet IDs")
+        verify_get_health(config)
         verify_user_path(config)
         verify_negative_requests(config)
         verify_gateway_rejects_before_lambda(config)

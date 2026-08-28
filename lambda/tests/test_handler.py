@@ -55,6 +55,13 @@ def make_event(body: object = '{"payload":"candidate-test"}') -> dict[str, objec
     }
 
 
+def make_get_event() -> dict[str, object]:
+    event = make_event(None)
+    event["httpMethod"] = "GET"
+    event["headers"] = {}
+    return event
+
+
 class FrozenDateTime(datetime):
     VALUE = datetime(2026, 8, 28, 7, 30, 0, tzinfo=timezone.utc)
 
@@ -96,6 +103,38 @@ class HandlerTests(unittest.TestCase):
         self.assertNotIn(header_value, combined_logs)
         self.assertIn("[REDACTED]", combined_logs)
         self.assertEqual(original, event, "logging must not mutate the input event")
+
+    def test_get_health_is_read_only_and_returns_version(self) -> None:
+        with mock.patch.object(handler, "APP_VERSION", "commit-get-123"):
+            response = handler.lambda_handler(make_get_event(), None)
+
+        self.assertEqual(200, response["statusCode"])
+        self.assertEqual(
+            {
+                "status": "healthy",
+                "message": "Service is available.",
+                "version": "commit-get-123",
+            },
+            json.loads(response["body"]),
+        )
+        self.assertEqual("application/json", response["headers"]["Content-Type"])
+        self.assertEqual("no-store", response["headers"]["Cache-Control"])
+        self.assertEqual([], self.table.calls)
+
+    def test_get_health_does_not_require_a_body(self) -> None:
+        event = make_get_event()
+        event.pop("body", None)
+        response = handler.lambda_handler(event, None)
+        self.assertEqual(200, response["statusCode"])
+        self.assertEqual([], self.table.calls)
+
+    def test_unsupported_method_returns_405_without_persistence(self) -> None:
+        event = make_get_event()
+        event["httpMethod"] = "DELETE"
+        response = handler.lambda_handler(event, None)
+        self.assertEqual(405, response["statusCode"])
+        self.assertEqual("GET, POST", response["headers"]["Allow"])
+        self.assertEqual([], self.table.calls)
 
     def test_valid_payload_is_saved_and_returns_exact_success(self) -> None:
         response = handler.lambda_handler(make_event(), None)

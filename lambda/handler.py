@@ -153,9 +153,38 @@ def _request_metadata(event: dict[str, Any]) -> tuple[dict[str, Any], dict[str, 
     return request_context, identity
 
 
+def _http_method(event: dict[str, Any]) -> str:
+    method = event.get("httpMethod", "POST")
+    return method.upper() if isinstance(method, str) else "POST"
+
+
+def _health_response() -> dict[str, Any]:
+    return _response(
+        200,
+        {
+            "status": "healthy",
+            "message": "Service is available.",
+            "version": APP_VERSION,
+        },
+    )
+
+
 def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
-    """Validate, log, and persist one health-check request."""
+    """Serve GET health checks or validate and persist POST requests."""
     _log(logging.INFO, "incoming_request", request=_sanitize_event(event))
+
+    method = _http_method(event)
+    if method == "GET":
+        _log(logging.INFO, "health_check_succeeded", application_version=APP_VERSION)
+        return _health_response()
+
+    if method != "POST":
+        _log(logging.WARNING, "request_rejected", reason="method_not_allowed", method=method)
+        return _response(
+            405,
+            {"status": "error", "message": "Method not allowed."},
+            {"Allow": "GET, POST"},
+        )
 
     try:
         payload = _validated_payload(event)
@@ -170,7 +199,7 @@ def lambda_handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         "request_id": request_id,
         "timestamp": now.isoformat().replace("+00:00", "Z"),
         "expires_at": int((now + timedelta(days=REQUEST_TTL_DAYS)).timestamp()),
-        "http_method": event.get("httpMethod", "POST"),
+        "http_method": method,
         "path": event.get("path", "/health"),
         "payload": payload,
         "source_ip": identity.get("sourceIp", "unknown"),

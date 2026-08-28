@@ -3,7 +3,7 @@ name: CI
 on:
   push:
     branches:
-      - submission
+      - main
   pull_request:
     branches:
       - main
@@ -126,6 +126,9 @@ jobs:
       - name: Bandit Python SAST
         run: bandit -r lambda scripts -x lambda/tests -ll -ii
 
+      - name: Audit Lambda production dependencies
+        run: pip-audit -r lambda/requirements.txt
+
       - name: Audit Lambda development dependencies
         run: pip-audit -r lambda/requirements-dev.txt
 
@@ -178,3 +181,4 @@ jobs:
           persona: auditor
           min-severity: low
           min-confidence: medium
+          version: "1.29.0"

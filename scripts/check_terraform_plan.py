@@ -52,6 +52,7 @@ def audit(plan: dict[str, Any], environment: str) -> list[str]:
         "module.dynamodb.aws_dynamodb_table.requests",
         "module.kms.aws_kms_key.dynamodb",
         "module.lambda.aws_lambda_function.health",
+        "module.api_gateway.aws_api_gateway_method.get",
         "module.api_gateway.aws_api_gateway_method.post",
         "module.api_gateway.aws_api_gateway_request_validator.body",
     }
@@ -86,9 +87,36 @@ def audit(plan: dict[str, Any], environment: str) -> list[str]:
     if not lambda_after.get("vpc_config"):
         errors.append("Lambda must remain attached to the isolated VPC")
 
-    method_after = changes["module.api_gateway.aws_api_gateway_method.post"]["change"].get("after") or {}
-    if method_after.get("api_key_required") is not True:
+    get_after = changes["module.api_gateway.aws_api_gateway_method.get"]["change"].get("after") or {}
+    if get_after.get("http_method") != "GET":
+        errors.append("health endpoint must expose GET")
+    if get_after.get("api_key_required") is not True:
+        errors.append("GET /health must continue requiring an API key")
+
+    post_change = changes["module.api_gateway.aws_api_gateway_method.post"]["change"]
+    post_after = post_change.get("after") or {}
+    post_after_unknown = post_change.get("after_unknown") or {}
+    if post_after.get("http_method") != "POST":
+        errors.append("health endpoint must expose POST")
+    if post_after.get("api_key_required") is not True:
         errors.append("POST /health must continue requiring an API key")
+
+    request_models = post_after.get("request_models")
+    if not isinstance(request_models, dict):
+        errors.append("POST /health must retain API Gateway request models")
+    else:
+        default_model = request_models.get("$default")
+        json_model = request_models.get("application/json")
+        if not default_model or not json_model or default_model != json_model:
+            errors.append(
+                "POST /health must use the same strict request model for $default and application/json"
+            )
+
+    request_validator_present = bool(post_after.get("request_validator_id")) or (
+        post_after_unknown.get("request_validator_id") is True
+    )
+    if not request_validator_present:
+        errors.append("POST /health must remain attached to the API Gateway request validator")
 
     validator_after = changes["module.api_gateway.aws_api_gateway_request_validator.body"]["change"].get("after") or {}
     if validator_after.get("validate_request_body") is not True:

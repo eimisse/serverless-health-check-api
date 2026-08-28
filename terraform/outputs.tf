@@ -3,14 +3,54 @@ output "api_url" {
   value       = module.api_gateway.invoke_url
 }
 
+output "api_id" {
+  description = "REST API identifier used by live control-plane verification."
+  value       = module.api_gateway.api_id
+}
+
+output "api_stage_name" {
+  description = "Environment-prefixed REST API stage name."
+  value       = module.api_gateway.stage_name
+}
+
+output "api_usage_plan_id" {
+  description = "Usage plan identifier used by live throttle verification."
+  value       = module.api_gateway.usage_plan_id
+}
+
 output "api_key_id" {
   description = "Identifier of the AWS-generated API key. Retrieve the value explicitly for smoke tests; Terraform never stores a configured value."
   value       = module.api_gateway.api_key_id
 }
 
+output "stage_throttle_rate_limit" {
+  description = "Expected per-method stage steady-state throttle rate."
+  value       = var.stage_throttle_rate_limit
+}
+
+output "stage_throttle_burst_limit" {
+  description = "Expected per-method stage burst throttle."
+  value       = var.stage_throttle_burst_limit
+}
+
+output "usage_plan_rate_limit" {
+  description = "Expected per-key usage-plan steady-state throttle rate."
+  value       = var.usage_plan_rate_limit
+}
+
+output "usage_plan_burst_limit" {
+  description = "Expected per-key usage-plan burst throttle."
+  value       = var.usage_plan_burst_limit
+}
+
 output "lambda_function_name" {
   description = "Deployed Lambda function name."
   value       = module.lambda.function_name
+}
+
+output "lambda_log_group_name" {
+  description = "Environment-prefixed CloudWatch log group used by Lambda."
+  value       = module.lambda.log_group_name
 }
 
 output "lambda_runtime_role_arn" {

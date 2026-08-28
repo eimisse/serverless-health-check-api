@@ -13,8 +13,10 @@ data "aws_iam_policy_document" "state_key" {
 
     actions = [
       "kms:CancelKeyDeletion",
+      "kms:CreateAlias",
       "kms:CreateGrant",
       "kms:Decrypt",
+      "kms:DeleteAlias",
       "kms:DescribeKey",
       "kms:DisableKey",
       "kms:DisableKeyRotation",
@@ -37,6 +39,7 @@ data "aws_iam_policy_document" "state_key" {
       "kms:ScheduleKeyDeletion",
       "kms:TagResource",
       "kms:UntagResource",
+      "kms:UpdateAlias",
       "kms:UpdateKeyDescription"
     ]
 

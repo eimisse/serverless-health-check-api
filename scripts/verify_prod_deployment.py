@@ -12,6 +12,7 @@ from verify_deployment import (
     check,
     verify_encryption,
     verify_gateway_rejects_before_lambda,
+    verify_get_health,
     verify_negative_requests,
     verify_network,
     verify_user_path,
@@ -23,6 +24,7 @@ def main() -> int:
         config = Config.from_environment()
         check(config.environment == "prod", "production verifier is restricted to prod")
         check(len(config.private_subnet_ids) == 2, "verification received exactly two private subnet IDs")
+        verify_get_health(config)
         verify_user_path(config)
         verify_negative_requests(config)
         verify_gateway_rejects_before_lambda(config)

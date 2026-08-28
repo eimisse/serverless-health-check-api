@@ -20,6 +20,39 @@ variable "github_repository" {
   }
 }
 
+variable "github_repository_owner_id" {
+  description = "Immutable GitHub owner ID used by repositories created after 2026-07-15 in the default OIDC subject."
+  type        = string
+  default     = "58630165"
+
+  validation {
+    condition     = var.github_repository_owner_id == "58630165"
+    error_message = "github_repository_owner_id must match the immutable ID of eimisse."
+  }
+}
+
+variable "github_repository_id" {
+  description = "Immutable GitHub repository ID used in the default OIDC subject."
+  type        = string
+  default     = "1349307973"
+
+  validation {
+    condition     = var.github_repository_id == "1349307973"
+    error_message = "github_repository_id must match eimisse/serverless-health-check-api."
+  }
+}
+
+variable "github_deployment_ref" {
+  description = "Only this reviewed Git ref may assume either deployment role."
+  type        = string
+  default     = "refs/heads/main"
+
+  validation {
+    condition     = var.github_deployment_ref == "refs/heads/main"
+    error_message = "github_deployment_ref is intentionally restricted to refs/heads/main."
+  }
+}
+
 variable "create_github_oidc_provider" {
   description = "Create the account-wide GitHub Actions OIDC provider. Set false when the provider already exists in this AWS account."
   type        = bool

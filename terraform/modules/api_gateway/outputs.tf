@@ -9,7 +9,7 @@ output "api_name" {
 }
 
 output "stage_name" {
-  description = "Environment REST API stage name."
+  description = "Environment-prefixed REST API stage name."
   value       = aws_api_gateway_stage.this.stage_name
 }
 
@@ -28,7 +28,12 @@ output "api_key_id" {
   value       = aws_api_gateway_api_key.health.id
 }
 
+output "usage_plan_id" {
+  description = "ID of the environment usage plan used for live throttle verification."
+  value       = aws_api_gateway_usage_plan.health.id
+}
+
 output "access_log_group_name" {
-  description = "Explicit API access-log group name."
+  description = "Explicit environment-prefixed API access-log group name."
   value       = aws_cloudwatch_log_group.access.name
 }

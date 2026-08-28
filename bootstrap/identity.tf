@@ -1,3 +1,13 @@
+locals {
+  github_repository_owner = split("/", var.github_repository)[0]
+  github_repository_name  = split("/", var.github_repository)[1]
+
+  # Repositories created after 2026-07-15 use GitHub's immutable default OIDC
+  # subject format. Names remain readable while owner/repository IDs prevent a
+  # future rename, transfer, or namespace reuse from inheriting this AWS trust.
+  github_immutable_repository = "${local.github_repository_owner}@${var.github_repository_owner_id}/${local.github_repository_name}@${var.github_repository_id}"
+}
+
 resource "aws_iam_openid_connect_provider" "github" {
   count = var.create_github_oidc_provider ? 1 : 0
 
@@ -10,10 +20,11 @@ resource "aws_iam_openid_connect_provider" "github" {
 }
 
 data "aws_iam_policy_document" "deployment_trust" {
+  #checkov:skip=CKV_AWS_358:Checkov 3.3.15 does not yet recognize GitHub's immutable owner@ID/repository@ID subject syntax (upstream bridgecrewio/checkov#7610); this trust pins the exact immutable repository, environment, audience, repository/owner IDs and main ref.
   for_each = local.environments
 
   statement {
-    sid     = "GitHubEnvironmentOnly"
+    sid     = "GitHubEnvironmentMainOnly"
     effect  = "Allow"
     actions = ["sts:AssumeRoleWithWebIdentity"]
 
@@ -31,7 +42,34 @@ data "aws_iam_policy_document" "deployment_trust" {
     condition {
       test     = "StringEquals"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:${var.github_repository}:environment:${each.key}"]
+      values   = ["repo:${local.github_immutable_repository}:environment:${each.key}"]
+    }
+
+    # These immutable/explicit claims provide defense in depth around the subject.
+    # AWS exposes GitHub's repository, owner, environment and ref JWT claims as
+    # OIDC condition context keys.
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:repository_id"
+      values   = [var.github_repository_id]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:repository_owner_id"
+      values   = [var.github_repository_owner_id]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:environment"
+      values   = [each.key]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:ref"
+      values   = [var.github_deployment_ref]
     }
   }
 }
