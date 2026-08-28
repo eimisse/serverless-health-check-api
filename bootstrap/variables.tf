@@ -34,10 +34,10 @@ variable "github_repository_owner_id" {
 variable "github_repository_id" {
   description = "Immutable GitHub repository ID used in the default OIDC subject."
   type        = string
-  default     = "1349307973"
+  default     = "1349993479"
 
   validation {
-    condition     = var.github_repository_id == "1349307973"
+    condition     = var.github_repository_id == "1349993479"
     error_message = "github_repository_id must match eimisse/serverless-health-check-api."
   }
 }

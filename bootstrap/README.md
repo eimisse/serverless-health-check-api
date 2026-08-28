@@ -10,20 +10,20 @@ This repository was created after GitHub's 2026-07-15 immutable OIDC-subject rol
 
 ```text
 owner:      eimisse@58630165
-repository: serverless-health-check-api@1349307973
+repository: serverless-health-check-api@1349993479
 ```
 
 The environment subjects are:
 
 ```text
-repo:eimisse@58630165/serverless-health-check-api@1349307973:environment:staging
-repo:eimisse@58630165/serverless-health-check-api@1349307973:environment:prod
+repo:eimisse@58630165/serverless-health-check-api@1349993479:environment:staging
+repo:eimisse@58630165/serverless-health-check-api@1349993479:environment:prod
 ```
 
 Each deployment trust policy also independently requires:
 
 - audience `sts.amazonaws.com`;
-- repository ID `1349307973`;
+- repository ID `1349993479`;
 - repository owner ID `58630165`;
 - the matching `staging` or `prod` GitHub Environment;
 - ref `refs/heads/main`.
