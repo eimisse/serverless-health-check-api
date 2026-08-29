@@ -1,11 +1,9 @@
 name: CI
 
 on:
-  # Main pushes are validated by deploy-staging.yml through workflow_call before
-  # any AWS OIDC permission is granted. This avoids duplicate main-branch CI runs.
-  pull_request:
-    branches:
-      - main
+  # Pull requests and main pushes execute this reusable workflow through
+  # deploy-staging.yml so protected-branch check names stay identical. Manual
+  # execution remains available for ad-hoc credential-free validation.
   workflow_dispatch:
   workflow_call:
 
