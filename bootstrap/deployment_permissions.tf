@@ -28,7 +28,19 @@ data "aws_iam_policy_document" "deployment_state_runtime" {
   }
 
   statement {
-    sid    = "ManageOwnStateObjects"
+    sid    = "ReadWriteOwnStateObject"
+    effect = "Allow"
+    actions = [
+      "s3:GetObject",
+      "s3:PutObject",
+    ]
+    resources = [
+      "${local.state_bucket_arn}/${local.state_key_by_environment[each.key]}",
+    ]
+  }
+
+  statement {
+    sid    = "ManageOwnStateLock"
     effect = "Allow"
     actions = [
       "s3:DeleteObject",
@@ -36,7 +48,6 @@ data "aws_iam_policy_document" "deployment_state_runtime" {
       "s3:PutObject",
     ]
     resources = [
-      "${local.state_bucket_arn}/${local.state_key_by_environment[each.key]}",
       "${local.state_bucket_arn}/${local.state_key_by_environment[each.key]}.tflock",
     ]
   }
