@@ -34,7 +34,7 @@ These immutable identifiers prevent a later repository rename, transfer, or name
 
 ## Remote Terraform state
 
-The deployment roles can access only their own `env/<environment>/terraform.tfstate` object and `.tflock` object. Native S3 locking is used; no DynamoDB lock table is created.
+The deployment roles can access only their own `env/<environment>/terraform.tfstate` object and `.tflock` object. The state object is limited to `s3:GetObject` and `s3:PutObject`; `s3:DeleteObject` is granted only to the `.tflock` object because native S3 locking must remove the lock while Terraform does not delete the state object itself.
 
 The state bucket is:
 
