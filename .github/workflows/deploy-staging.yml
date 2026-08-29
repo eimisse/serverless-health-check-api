@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - main
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
 
 permissions: {}
@@ -17,14 +20,18 @@ env:
 
 jobs:
   quality-gate:
-    if: github.ref == 'refs/heads/main'
+    # Pull requests must expose these exact credential-free checks because the
+    # protected main ruleset requires them. Manual runs from non-main refs do
+    # not need the release gate.
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
     name: Credential-free quality and security gates
     uses: ./.github/workflows/ci.yml
     permissions:
       contents: read # Required only so the reusable quality workflow can inspect repository source.
 
   deploy:
-    # workflow_dispatch can target another ref; only reviewed main may obtain AWS credentials.
+    # Pull requests and workflow_dispatch from another ref can run validation,
+    # but only reviewed main may obtain AWS credentials or mutate staging.
     if: github.ref == 'refs/heads/main'
     needs: quality-gate
     name: Deploy and verify staging
