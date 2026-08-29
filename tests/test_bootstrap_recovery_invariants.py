@@ -36,6 +36,28 @@ class BootstrapRecoveryInvariantTests(unittest.TestCase):
         self.assertIn('"kms:CreateAlias"', source)
         self.assertIn('"kms:PutKeyPolicy"', source)
 
+    def test_deployment_state_delete_is_limited_to_lock_file(self):
+        source = read_source("bootstrap/deployment_permissions.tf")
+
+        self.assertIn('sid    = "ReadWriteOwnStateObject"', source)
+        self.assertIn('sid    = "ManageOwnStateLock"', source)
+
+        state_fragment = source.split(
+            'sid    = "ReadWriteOwnStateObject"', 1
+        )[1].split('sid    = "ManageOwnStateLock"', 1)[0]
+        self.assertIn('"s3:GetObject"', state_fragment)
+        self.assertIn('"s3:PutObject"', state_fragment)
+        self.assertNotIn('"s3:DeleteObject"', state_fragment)
+        self.assertNotIn('.tflock', state_fragment)
+
+        lock_fragment = source.split(
+            'sid    = "ManageOwnStateLock"', 1
+        )[1].split('sid    = "UseStateEncryptionKey"', 1)[0]
+        self.assertIn('"s3:GetObject"', lock_fragment)
+        self.assertIn('"s3:PutObject"', lock_fragment)
+        self.assertIn('"s3:DeleteObject"', lock_fragment)
+        self.assertIn('.tflock', lock_fragment)
+
     def test_deployment_permissions_are_split_out_of_the_role_inline_quota(self):
         source = read_source("bootstrap/deployment_permissions.tf")
 
