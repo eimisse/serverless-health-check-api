@@ -39,6 +39,19 @@ GitHub deployment authentication uses short-lived OIDC credentials. Long-lived `
 - production is intended to be protected by GitHub Environment required reviewers; this repository does not claim that GitHub UI setting exists until it is configured.
 - production captures the prior immutable release before apply and can restore the `prod-release` alias after a deployment failure. That fail-safe does not replace Terraform reconciliation for other partially applied resources.
 
+## AWS-managed API Gateway logging policy exception
+
+`bootstrap/api_gateway_logging.tf` attaches the AWS-managed `AmazonAPIGatewayPushToCloudWatchLogs` service-role policy to the regional API Gateway CloudWatch role. AWS documents this account-level role and policy as the supported permission set for REST API CloudWatch logging. The AWS-managed policy enumerates its CloudWatch Logs actions but uses `Resource = "*"` because API Gateway may create and discover service-managed log groups and streams.
+
+This wildcard is intentionally isolated from the application runtime and GitHub deployment roles:
+
+- the role trust policy allows only `apigateway.amazonaws.com` to assume it;
+- no `Action = "*"` permission is introduced;
+- the project-owned inline policy additionally scopes normal access-log stream writes to the explicit staging/prod health-check log groups;
+- Lambda runtime and GitHub deployment policies remain subject to the repository's machine-audited wildcard exception catalogues and least-privilege checks.
+
+The AWS-managed policy is therefore treated as an AWS service-role exception, not as a general-purpose wildcard granted to application code or CI/CD. It is kept explicit in Terraform so a reviewer can distinguish the service requirement from project-authored IAM permissions.
+
 See [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md) for the scoped threat model and control mapping, and [`security/`](security/) for reviewed IAM wildcard exceptions.
 
 Live staging verification has completed successfully for the current proven `main` release path. Production remains intentionally undeployed for homework demonstration, and its required-reviewer protection remains an external GitHub Environment configuration item that must be confirmed before any real production use.
