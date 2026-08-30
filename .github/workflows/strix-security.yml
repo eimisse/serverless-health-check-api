@@ -8,19 +8,13 @@ on:
         required: true
         default: quick
         type: choice
-        options:
-          - quick
-          - standard
-          - deep
+        options: [quick, standard, deep]
   push:
-    branches:
-      - main
-      - 'agent/**'
+    branches: [main, 'agent/**']
     paths-ignore:
       - '.github/workflows/strix-security.yml'
   pull_request:
-    branches:
-      - main
+    branches: [main]
 
 permissions:
   contents: read
@@ -34,55 +28,37 @@ jobs:
     if: >-
       github.actor == github.repository_owner &&
       (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
-    runs-on:
-      - self-hosted
-      - Windows
-      - X64
-      - eimisse-security
-      - serverless-health-check-api
-      - eimisse-session0
+    runs-on: [self-hosted, Windows, X64, eimisse-security, wsl-strix, serverless-health-check-api, eimisse-interactive]
     timeout-minutes: 180
     env:
       EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       STRIX_SCAN_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.scan_mode || 'quick' }}
     steps:
-      - name: Checkout exact trusted head
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
           clean: true
-
       - name: Verify exact checked-out head
         shell: powershell
         run: |
           $head = (git rev-parse HEAD).Trim()
-          if ($head -ne $env:EXPECTED_HEAD_SHA) {
-            throw "Expected $env:EXPECTED_HEAD_SHA but checked out $head"
-          }
-          Write-Host "Exact head: $head"
-
-      - name: Run shared local Strix security scan
+          if ($head -ne $env:EXPECTED_HEAD_SHA) { throw "Expected $env:EXPECTED_HEAD_SHA but checked out $head" }
+      - name: Run shared WSL2 Strix security scan
         shell: powershell
         run: |
           $runner = Join-Path $env:ProgramData 'Eimisse\RunnerDashboard\security\Invoke-StrixSecurity.ps1'
-          if (-not (Test-Path -LiteralPath $runner -PathType Leaf)) {
-            throw 'Shared Strix runtime is missing. Install Eimisse Runner Dashboard v28 and run SETUP_STRIX_ALL_PROJECTS_v28.bat.'
-          }
+          if (-not (Test-Path -LiteralPath $runner -PathType Leaf)) { throw 'Shared Strix runtime is missing. Install Eimisse Runner Dashboard v28.3.' }
           $diffBase = ''
-          if ($env:GITHUB_EVENT_NAME -eq 'pull_request' -and -not [string]::IsNullOrWhiteSpace('${{ github.base_ref }}')) {
-            $diffBase = 'origin/${{ github.base_ref }}'
-          }
+          if ($env:GITHUB_EVENT_NAME -eq 'pull_request' -and -not [string]::IsNullOrWhiteSpace('${{ github.base_ref }}')) { $diffBase = 'origin/${{ github.base_ref }}' }
           & $runner -Repository '${{ github.repository }}' -CommitSha $env:EXPECTED_HEAD_SHA -ScanMode $env:STRIX_SCAN_MODE -Target '.' -DiffBase $diffBase
           exit $LASTEXITCODE
-
       - name: Upload Strix evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: strix-${{ github.event.pull_request.head.sha || github.sha }}
-          path: |
-            strix_runs/**
+          path: strix_runs/**
           if-no-files-found: warn
           retention-days: 14
